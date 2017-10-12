@@ -14594,6 +14594,7 @@ module perturbation
               !
               if (job%IOmatelem_split.and.(islice<iterm1.or.iterm2<islice)) cycle
               if ((.not.job%IOmatelem_split) .and. (num_images() .ne. 1)) error stop 'parallel run with un-split output'
+              if (mod(islice,num_images()) .ne. (this_image() - 1)) cycle
               !
               grot_t = 0
               hrot_t = 0
