@@ -14598,7 +14598,7 @@ module perturbation
               grot_t = 0
               hrot_t = 0
               !
-              if (job%verbose>=4) write(out,"('k1,k2 = ',2i8)") k1,k2
+              if (job%verbose>=4) write(out,"('k1,k2,islice = ',4i8)") k1,k2,islice
               !
               grot_N = FLread_fields_dimension_field(job_is,k1,k2)
               !
@@ -14670,7 +14670,7 @@ module perturbation
                 if (islice<iterm1.or.iterm2<islice) cycle
               endif
               !
-              if (job%verbose>=4) write(out,"('k1,k2 = ',2i8)") k1,k2
+              if (job%verbose>=4) write(out,"('k1,k2,islice = ',3i8)") k1,k2,islice
               !
               grot_t = 0
               !
