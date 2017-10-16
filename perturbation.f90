@@ -14682,6 +14682,7 @@ module perturbation
               fl => me%gcor(k1,k2)
               !
               do iterm = 1,gcor_N
+                if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                 !
                 !hrot_t = 0
                 !
@@ -14696,6 +14697,9 @@ module perturbation
                 !$omp end parallel do
                 !
               enddo
+              !
+              call co_sum(grot_t, result_image=1)
+              !
               !$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
               do icoeff=1,mdimen
                 do jcoeff=1,icoeff-1
