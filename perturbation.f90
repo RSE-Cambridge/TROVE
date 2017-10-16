@@ -14274,6 +14274,7 @@ module perturbation
   ! Contracted matrix elements
   !
   subroutine PTcontracted_matelem_class(jrot) 
+    use coarray_aux
     !
     integer(ik),intent(in)   :: jrot
     integer(ik)        :: PotOrder,KinOrder,extForder
@@ -14604,6 +14605,7 @@ module perturbation
               fl => me%grot(k1,k2)
               !
               do iterm = 1,grot_N
+                if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                 !
                 call calc_contract_matrix_elements_II(iterm,k1,k2,fl,hrot_t,grot_contr_matelem_single_term)
                 !
@@ -14616,6 +14618,8 @@ module perturbation
                 !$omp end parallel do
                 !
               enddo
+              !
+              call co_sum(grot_t, result_image=1)
               !
               !$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
               do icoeff=1,mdimen
