@@ -14397,14 +14397,18 @@ module perturbation
           ! Prepare the checkpoint file
           !
           job_is ='Vib. matrix elements of the rot. kinetic part'
-          call IOStart(trim(job_is),chkptIO)
+          if (this_image() .eq. 1) then !AT
+            call TimerStart('vibmat') !AT
+            call IOStart(trim(job_is),chkptIO)
 
-          open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%kinetmat_file)
-          write(chkptIO) 'Start Kinetic part'
-          !
-          ! store the bookkeeping information about the contr. basis set
-          !
-          call PTstore_icontr_cnu(PT%Maxcontracts,chkptIO,job%IOkinet_action)
+            open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%kinetmat_file)
+            write(chkptIO) 'Start Kinetic part'
+            !
+            ! store the bookkeeping information about the contr. basis set
+            !
+            call PTstore_icontr_cnu(PT%Maxcontracts,chkptIO,job%IOkinet_action)
+            call TimerStop('vibmat') !AT
+          endif
           !
         endif 
         !
@@ -14576,7 +14580,7 @@ module perturbation
           !
           if (trim(job%IOkinet_action)=='SAVE'.and..not.job%IOmatelem_split) then
             !
-            write(chkptIO) 'g_rot'
+            if(this_image().eq.1) write(chkptIO) 'g_rot'
             !
           endif 
           !
@@ -14628,19 +14632,43 @@ module perturbation
                 enddo
               enddo
               !$omp end parallel do
+              !AT - lolsnope
+              !!!!!!!$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
+              !!!!!!do icoeff=1+((this_image() - 1) * (mdimen/num_images())),(this_image()*(mdimen/num_images()))
+              !!!!!!  do jcoeff=1,icoeff-1
+              !!!!!!    grot_t(icoeff,jcoeff) = grot_t(jcoeff,icoeff)
+              !!!!!!  enddo
+              !!!!!!enddo
+              !!!!!!!$omp end parallel do
+
+              !!!!!!if (this_image() .eq. num_images()) then
+              !!!!!!  !$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
+              !!!!!!  do icoeff=1+(this_image()*(mdimen/num_images())),mdimen
+              !!!!!!    do jcoeff=1,icoeff-1
+              !!!!!!      grot_t(icoeff,jcoeff) = grot_t(jcoeff,icoeff)
+              !!!!!!    enddo
+              !!!!!!  enddo
+              !!!!!!  !$omp end parallel do
+              !!!!!!endif
+
+              !!!!!!call co_max(grot_t, result_image=1)
               !
-              if (trim(job%IOkinet_action)=='SAVE') then
-                if (job%IOmatelem_split) then 
-                  !
-                  call write_divided_slice(islice,'g_rot',job%matelem_suffix,mdimen,grot_t)
-                  !
-                else
-                  !
-                  ! store the matrix elements 
-                  !
-                  write(chkptIO) grot_t
-                  !
+              if (this_image().eq.1) then !AT
+                call TimerStart('write_grotT')
+                if (trim(job%IOkinet_action)=='SAVE') then
+                  if (job%IOmatelem_split) then 
+                    !
+                    call write_divided_slice(islice,'g_rot',job%matelem_suffix,mdimen,grot_t)
+                    !
+                  else
+                    !
+                    ! store the matrix elements 
+                    !
+                    write(chkptIO) grot_t
+                    !
+                  endif
                 endif
+                call TimerStop('write_grotT')
               endif
               ! 
             enddo
@@ -14650,7 +14678,7 @@ module perturbation
           !
           if (trim(job%IOkinet_action)=='SAVE'.and..not.job%IOmatelem_split) then
             !
-            write(chkptIO) 'g_cor'
+            if(this_image().eq.1) write(chkptIO) 'g_cor'
             !
           endif
           !
@@ -14725,19 +14753,23 @@ module perturbation
               !
             enddo
             !
-            if (trim(job%IOkinet_action)=='SAVE') then
-              !
-              if (job%IOmatelem_split) then 
+            if (this_image().eq.1) then !AT
+              call TimerStart('write_gcorT') !AT
+              if (trim(job%IOkinet_action)=='SAVE') then
                 !
-                call write_divided_slice(islice,'g_cor',job%matelem_suffix,mdimen,gcor_t)
-                !
-              else
-                !
-                ! store the matrix elements 
-                !
-                write(chkptIO) gcor_t
-                !
+                if (job%IOmatelem_split) then 
+                  !
+                  call write_divided_slice(islice,'g_cor',job%matelem_suffix,mdimen,gcor_t)
+                  !
+                else
+                  !
+                  ! store the matrix elements 
+                  !
+                  write(chkptIO) gcor_t
+                  !
+                endif
               endif
+              call TimerStop('write_gcorT') !AT
             endif
             !
           enddo
@@ -14800,36 +14832,40 @@ module perturbation
             !
             if (job%verbose>=2) write(out,"('...end!')")
             !
+            call TimerStart('write_treat_rotation') !AT
             if (treat_rotation.and.trim(job%IOkinet_action)=='SAVE') then
                !
                ! store the rotational matrix elements 
                !
-               write(chkptIO) 'g_rot'
-               !
-               do k1 = 1,3
-                 do k2 = 1,3
-                   !
-                   write(chkptIO) grot_(k1,k2,:,:)
-                   ! 
+               if (this_image().eq.1) then !AT
+                 write(chkptIO) 'g_rot'
+                 !
+                 do k1 = 1,3
+                   do k2 = 1,3
+                     !
+                     write(chkptIO) grot_(k1,k2,:,:)
+                     ! 
+                   enddo
                  enddo
-               enddo
-               !
-               write(chkptIO) 'g_cor'
-               !
-               ! store the Coriolis matrix elements 
-               !
-               do k1 = 1,PT%Nmodes
-                 do k2 = 1,3
-                   !
-                   write(chkptIO) gcor_(k1,k2,:,:)
-                   ! 
+                 !
+                 write(chkptIO) 'g_cor'
+                 !
+                 ! store the Coriolis matrix elements 
+                 !
+                 do k1 = 1,PT%Nmodes
+                   do k2 = 1,3
+                     !
+                     write(chkptIO) gcor_(k1,k2,:,:)
+                     ! 
+                   enddo
                  enddo
-               enddo
+               endif
                !
                deallocate(grot_,gcor_)
                call ArrayStop('grot-gcor-fields')
                !
             endif
+            call TimerStop('write_treat_rotation') !AT
             !
           else ! if (.not.job%IOmatelem_split.or.job%iswap(1)==0 ) then
             !
@@ -14869,7 +14905,9 @@ module perturbation
                 !
                 fl => me%gvib(k1,k2)
                 !
+                call TimerStart('iterm_over_gvibN')
                 do iterm = 1,gvib_N
+                  if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                   !
                   !fvib_t = 0
                   !
@@ -14884,6 +14922,9 @@ module perturbation
                   !$omp end parallel do
                   !
                 enddo
+                call TimerStop('iterm_over_gvibN')
+
+                call co_sum(gvib_t)
                 !
                 if (job%IOmatelem_divide) then
                   !
@@ -14927,7 +14968,9 @@ module perturbation
               !
               fl => me%poten
               !
+              call TimerStart('iterm_over_potenN')
               do iterm = 1,poten_N
+                  if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                   !
                   if (job%verbose>=4) write(out,"('iterm = ',i8)") iterm
                   !
@@ -14942,6 +14985,9 @@ module perturbation
                   !$omp end parallel do
                   !
               enddo
+              call TimerStop('iterm_over_potenN')
+
+              call co_sum(gvib_t)
               !
             endif
             !
@@ -14958,7 +15004,9 @@ module perturbation
               !
               islice = (PT%Nmodes+3)*3+PT%Nmodes**2+1
               !
+              call TimerStart('write_divided_g_vib') !AT
               call write_divided_slice(islice,'g_vib',job%matelem_suffix,mdimen,gvib_t)
+              call TimerStop('write_divided_g_vib') !AT
               !
               if (job%IOmatelem_split.and.job%iswap(1)==1) job%iswap(1)=0
               !
@@ -14976,25 +15024,29 @@ module perturbation
                !
                f_t = -0.5_rk
                !
-               do  islice = iterm1,iterm2
-                 !
-                 if (islice==(PT%Nmodes+3)*3+PT%Nmodes**2+1) f_t = 1.0_rk
-                 !
-                 call divided_slice_open(islice,chkptIO_,'g_vib',job%matelem_suffix)
-                 !
-                 read(chkptIO_) gvib_t
-                 !
-                 !$omp parallel do private(icoeff,jcoeff) shared(hvib_t) schedule(dynamic)
-                 do icoeff=1,mdimen
-                   do jcoeff=1,icoeff
-                     hvib_t(jcoeff,icoeff) = hvib_t(jcoeff,icoeff)+f_t*gvib_t(jcoeff,icoeff)
+               call TimerStart('vib_matelem_div') !AT
+               if (this_image().eq.1) then !AT TODO parallel?
+                 do  islice = iterm1,iterm2
+                   !
+                   if (islice==(PT%Nmodes+3)*3+PT%Nmodes**2+1) f_t = 1.0_rk
+                   !
+                   call divided_slice_open(islice,chkptIO_,'g_vib',job%matelem_suffix)
+                   !
+                   read(chkptIO_) gvib_t
+                   !
+                   !$omp parallel do private(icoeff,jcoeff) shared(hvib_t) schedule(dynamic)
+                   do icoeff=1,mdimen
+                     do jcoeff=1,icoeff
+                       hvib_t(jcoeff,icoeff) = hvib_t(jcoeff,icoeff)+f_t*gvib_t(jcoeff,icoeff)
+                     enddo
                    enddo
+                   !$omp end parallel do
+                   !
+                   call divided_slice_close(islice,chkptIO_,'g_vib')
+                   !
                  enddo
-                 !$omp end parallel do
-                 !
-                 call divided_slice_close(islice,chkptIO_,'g_vib')
-                 !
-               enddo
+               endif
+               call TimerStop('vib_matelem_div') !AT
                !
                gvib_t = 0
                !
@@ -15029,14 +15081,18 @@ module perturbation
           !
           ! store the matrix elements 
           !
-          if ((trim(job%IOkinet_action)=='SAVE'.or.trim(job%IOkinet_action)=='VIB_SAVE').and. & 
-                  (.not.job%IOmatelem_divide.or.job%iswap(1)==0) .and. &
-                  (.not.job%IOmatelem_split.or.job%iswap(1)==0)) then
-             !
-             write(chkptIO) 'hvib'
-             write(chkptIO) hvib%me
-             !
+          call TimerStart('store_matelem') !AT
+          if (this_image().eq.1) then !AT
+            if ((trim(job%IOkinet_action)=='SAVE'.or.trim(job%IOkinet_action)=='VIB_SAVE').and. & 
+                    (.not.job%IOmatelem_divide.or.job%iswap(1)==0) .and. &
+                    (.not.job%IOmatelem_split.or.job%iswap(1)==0)) then
+               !
+               write(chkptIO) 'hvib'
+               write(chkptIO) hvib%me
+               !
+            endif
           endif
+          call TimerStop('store_matelem') !AT
           !
         endif
         !
@@ -15046,8 +15102,10 @@ module perturbation
            (.not.job%IOmatelem_divide.or.job%iswap(1)==0 ).and. &
            (.not.job%IOmatelem_split.or.job%iswap(1)==0 ) ) then
           !
-          write(chkptIO) 'End Kinetic part'
-          close(chkptIO,status='keep')
+          if (this_image().eq.1) then !AT
+            write(chkptIO) 'End Kinetic part'
+            close(chkptIO,status='keep')
+          endif
           !
         endif 
         !
@@ -15073,14 +15131,18 @@ module perturbation
             ! Prepare the checkpoint file
             !
             job_is ='external field contracted matrix elements for J=0'
-            call IOStart(trim(job_is),chkptIO)
-            !
-            open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%extFmat_file)
-            write(chkptIO) 'Start external field'
-            !
-            ! store the matrix elements 
-            !
-            write(chkptIO) PT%Maxcontracts
+            if (this_image().eq.1) then !AT
+              call TimerStart('store_matelem_ext') !AT
+              call IOStart(trim(job_is),chkptIO)
+              !
+              open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%extFmat_file)
+              write(chkptIO) 'Start external field'
+              !
+              ! store the matrix elements 
+              !
+              write(chkptIO) PT%Maxcontracts
+              call TimerStop('store_matelem_ext') !AT
+            endif
             !
           endif 
           !
@@ -15103,7 +15165,9 @@ module perturbation
               !
               fl => me%extF(imu)
               !
+              call TimerStart('iterm_over_extFN')
               do iterm = 1,extF_N_
+                if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                 !
                 call calc_contract_matrix_elements_II(iterm,imu,1,fl,extF_r,extF_contr_matelem_single_term)
                 !
@@ -15116,7 +15180,10 @@ module perturbation
                 !$omp end parallel do
                 !
               enddo
+              call TimerStop('iterm_over_extFN')
+              call co_sum(extF_t)
               !
+              call TimerStart('iterm_over_extFN_res')
               !$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
               do icoeff=1,mdimen
                 do jcoeff=1,icoeff-1
@@ -15124,20 +15191,25 @@ module perturbation
                 enddo
               enddo
               !$omp end parallel do
+              call TimerStop('iterm_over_extFN_res')
               !
-              if (job%IOextF_divide) then 
-                !
-                call write_divided_slice(imu,'extF',job%extmat_suffix,mdimen,extF_t)
-                !
-              else
-                !
-                ! always store the matrix elements of the extF moment 
-                !
-                write(chkptIO) imu
-                !
-                write(chkptIO) extF_t
-                !
+              call TimerStart('store_matelem_ext_2') !AT
+              if (this_image().eq.1) then !AT
+                if (job%IOextF_divide) then 
+                  !
+                  call write_divided_slice(imu,'extF',job%extmat_suffix,mdimen,extF_t)
+                  !
+                else
+                  !
+                  ! always store the matrix elements of the extF moment 
+                  !
+                  write(chkptIO) imu
+                  !
+                  write(chkptIO) extF_t
+                  !
+                endif
               endif
+              call TimerStop('store_matelem_ext_2') !AT
               !
               if (job%verbose>=4) write(out,"('...done')",advance='YES') 
               !
@@ -15159,17 +15231,21 @@ module perturbation
             !
             if (job%verbose>=4) write(out,"(/'Storing External Field...')",advance='NO')
             !
-            do imu = 1,extF_rank
-              !
-              if (job%verbose>=4) write(out,"(' ',i4)",advance='NO') imu
-              !
-              ! always store the matrix elements of the extF moment 
-              !
-              write(chkptIO) imu
-              !
-              write(chkptIO) extF_dvr(imu,:,:)
-              !
-            enddo
+            call TimerStart('store_matelem_ext_3') !AT
+            if (this_image().eq.1) then !AT
+              do imu = 1,extF_rank
+                !
+                if (job%verbose>=4) write(out,"(' ',i4)",advance='NO') imu
+                !
+                ! always store the matrix elements of the extF moment 
+                !
+                write(chkptIO) imu
+                !
+                write(chkptIO) extF_dvr(imu,:,:)
+                !
+              enddo
+            endif
+            call TimerStop('store_matelem_ext_3') !AT
             !
             deallocate(extF_dvr)
             call ArrayStop('extF-fields')
@@ -15178,7 +15254,9 @@ module perturbation
             !
           endif 
           !
-          if (.not.job%IOextF_divide) write(chkptIO) 'End external field'
+          if (this_image().eq.1) then !AT
+            if (.not.job%IOextF_divide) write(chkptIO) 'End external field'
+          endif
           !
         endif
         !

@@ -180,8 +180,12 @@
       endif
       !
       if (job%contrci_me_fast) then 
+        if (this_image() .eq. 1) then
         !
-        call PTstore_contr_matelem(j)
+          call PTstore_contr_matelem(j)
+        endif
+
+        sync all
         !
         call PTcontracted_matelem_class_fast(j) 
         !
@@ -191,15 +195,17 @@
         !
       endif
       !
-      call PThamiltonian_contract(j)
-      !
-      ! convert to j=0 representation as part of the first step j=0 calculation
-      !
-      if (job%convert_model_j0) then
+      if (this_image() .eq. 1) then!AT
+        call PThamiltonian_contract(j)
         !
-        call TRconvert_repres_J0_to_contr(j)
-        call TRconvert_matel_j0_eigen(j)
+        ! convert to j=0 representation as part of the first step j=0 calculation
         !
+        if (job%convert_model_j0) then
+          !
+          call TRconvert_repres_J0_to_contr(j)
+          call TRconvert_matel_j0_eigen(j)
+          !
+        endif
       endif
       !
       call TimerStop('TROVE')

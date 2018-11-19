@@ -12,8 +12,8 @@ pot_user = pot_ch4
 
 PLAT = _0605
 ###FOR  = ifort
-FOR = ifort 
-FFLAGS = -ip   -openmp -O3 -static
+FOR = mpiifort 
+FFLAGS = -ip  -xhost  -qopenmp -O3 -coarray=distributed
 
 
 #ARPACK =  ~/libraries/ARPACK/libarpack_omp_64.a
@@ -44,7 +44,7 @@ molecules.o:    accuracy.o moltype.o mol_xy.o mol_xy2.o mol_xy3.o mol_xy4.o mol_
 													 symmetry.o $(pot_user).o
 
 me_numer.o:     accuracy.o molecules.o timer.o
-me_str.o:       accuracy.o
+me_str.o:       accuracy.o me_numer.o
 me_bnd.o:       accuracy.o timer.o me_numer.o
 me_rot.o:       accuracy.o timer.o
 
@@ -78,6 +78,8 @@ pot_ch3oh.o:	  accuracy.o moltype.o
 pot_c2h4.o:	    accuracy.o moltype.o
 pot_c2h6.o:     accuracy.o moltype.o
 pot_abcd.o:     accuracy.o moltype.o lapack.o
+
+coarray_aux.o:	timer.o
 
 clean:
 	rm -f *.mod *.o

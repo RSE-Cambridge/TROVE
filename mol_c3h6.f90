@@ -88,7 +88,7 @@ module mol_c3h6
       !
       if (direct) then ! transform from Z-matrix coords to TROVE coords
 
-        dst(1:15) = src(1:13)-molec%local_eq(1:15)
+        dst(1:15) = src(1:15)-molec%local_eq(1:15)
         dst(16:20) = src(17:21)-molec%local_eq(17:21)
         dst(21) = src(16)-molec%local_eq(16)
         !
