@@ -14550,8 +14550,11 @@ module perturbation
           if (this_image().eq.1) then
             allocate(hvib%me(mdimen,mdimen),stat=alloc)
             call ArrayStart('gvib-grot-gcor-fields',alloc,1,kind(f_t),rootsize)
-            hvib%me = 0
+          else
+            allocate(hvib%me(mdimen,startdim:enddim),stat=alloc)
+            call ArrayStart('gvib-grot-gcor-fields',alloc,1,kind(f_t),rootsize)
           endif
+          hvib%me = 0
           !
           if (job%verbose>=5) call MemoryReport
           !
@@ -14646,7 +14649,7 @@ module perturbation
                 !
                 !$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
                 do icoeff=startdim,enddim
-                  do jcoeff=1,icoeff
+                  do jcoeff=1,mdimen
                     grot_t(jcoeff,icoeff) = grot_t(jcoeff,icoeff) + hrot_t(jcoeff,icoeff)
                   enddo
                 enddo
@@ -14658,13 +14661,14 @@ module perturbation
               call co_gather(grot_t)
               !
               if (this_image().eq.1) then
-                !$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
-                do icoeff=1,mdimen
-                  do jcoeff=1,icoeff-1
-                    grot_t(icoeff,jcoeff) = grot_t(jcoeff,icoeff)
-                  enddo
-                enddo
-                !$omp end parallel do
+                !write(*,*) "TEST:", grot_t(1000,2048), grot_t(2048,1000)
+                !!$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
+                !do icoeff=1,mdimen
+                !  do jcoeff=1,icoeff-1
+                !    grot_t(icoeff,jcoeff) = grot_t(jcoeff,icoeff)
+                !  enddo
+                !enddo
+                !!$omp end parallel do
 
                 call TimerStart('write_grotT')
                 if (trim(job%IOkinet_action)=='SAVE') then
@@ -14730,8 +14734,12 @@ module perturbation
                 !
                 !$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
                 do icoeff=startdim,enddim
-                  do jcoeff=1,icoeff
-                    grot_t(jcoeff,icoeff) = grot_t(jcoeff,icoeff) + hrot_t(jcoeff,icoeff)
+                  do jcoeff=1,mdimen
+                    if (jcoeff .lt. icoeff) then
+                      grot_t(jcoeff,icoeff) = grot_t(jcoeff,icoeff) - hrot_t(jcoeff,icoeff)
+                    else
+                      grot_t(jcoeff,icoeff) = grot_t(jcoeff,icoeff) + hrot_t(jcoeff,icoeff)
+                    endif
                   enddo
                 enddo
                 !$omp end parallel do
@@ -14739,35 +14747,36 @@ module perturbation
               enddo
               !
               ! Gather to root
-              call co_gather(grot_t)
               !call co_sum(grot_t, result_image=1)
               !
-              if (this_image().eq.1) then
-                !$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
-                do icoeff=1,mdimen
-                  do jcoeff=1,icoeff-1
-                    grot_t(icoeff,jcoeff) =  grot_t(jcoeff,icoeff)
-                    grot_t(jcoeff,icoeff) = -grot_t(jcoeff,icoeff)
-                  enddo
-                enddo
-                !$omp end parallel do
+              !if (this_image().eq.1) then
+                !!$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
+                !do icoeff=1,mdimen
+                !  do jcoeff=1,icoeff-1
+                !    grot_t(icoeff,jcoeff) =  grot_t(jcoeff,icoeff)
+                !    grot_t(jcoeff,icoeff) = -grot_t(jcoeff,icoeff)
+                !  enddo
+                !enddo
+                !!$omp end parallel do
                 !
                 if (job%IOmatelem_divide) then
+                  call co_gather(grot_t)
                   !
                   call write_divided_slice(islice,'g_cor',job%matelem_suffix,mdimen,grot_t)
                   !
                 else
                   !
                   !$omp parallel do private(icoeff) shared(gcor_t) schedule(dynamic)
-                  do icoeff=1,mdimen
+                  do icoeff=startdim,enddim
                       gcor_t(icoeff,:) = gcor_t(icoeff,:)+grot_t(icoeff,:)
                   enddo
                   !$omp end parallel do
                   !
                 endif 
-              endif
+              !endif
               !
             enddo
+            call co_gather(gcor_t)
             !
             if (this_image().eq.1) then !AT
               call TimerStart('write_gcorT') !AT
@@ -14935,7 +14944,7 @@ module perturbation
                   !
                   !$omp parallel do private(icoeff,jcoeff) shared(gvib_t) schedule(dynamic)
                   do icoeff=startdim,enddim
-                    do jcoeff=1,icoeff
+                    do jcoeff=1,mdimen
                       gvib_t(jcoeff,icoeff) = gvib_t(jcoeff,icoeff) + fvib_t(jcoeff,icoeff)
                     enddo
                   enddo
@@ -14946,6 +14955,7 @@ module perturbation
                 !
                 if (job%IOmatelem_divide) then
                   !
+                  call co_gather(gvib_t)
                   !$omp parallel do private(icoeff,jcoeff) shared(gvib_t) schedule(dynamic)
                   do icoeff=1,mdimen
                     do jcoeff=1,icoeff-1
@@ -14960,7 +14970,7 @@ module perturbation
                   !
                   !$omp parallel do private(icoeff,jcoeff) shared(hvib_t) schedule(dynamic)
                   do icoeff=startdim,enddim
-                    do jcoeff=1,icoeff
+                    do jcoeff=1,mdimen
                       hvib_t(jcoeff,icoeff) = hvib_t(jcoeff,icoeff)-0.5_rk*gvib_t(jcoeff,icoeff)
                     enddo
                   enddo
@@ -14972,7 +14982,7 @@ module perturbation
             enddo
             !
             ! Gather to root
-            call co_gather(hvib_t)
+            !call co_gather(hvib_t)
             !
             !hvib_t = -0.5_rk*hvib_t
             !
@@ -14999,7 +15009,7 @@ module perturbation
                   !
                   !$omp parallel do private(icoeff,jcoeff) shared(gvib_t) schedule(dynamic)
                   do icoeff=startdim,enddim
-                    do jcoeff=1,icoeff
+                    do jcoeff=1,mdimen
                       gvib_t(jcoeff,icoeff) = gvib_t(jcoeff,icoeff) + fvib_t(jcoeff,icoeff)
                     enddo
                   enddo
@@ -15009,7 +15019,7 @@ module perturbation
               call TimerStop('<dbg>iterm_over_potenN')
 
               ! gather matrix data to root node
-              call co_gather(gvib_t)
+              !call co_gather(gvib_t)
               !
             endif
             !
@@ -15058,7 +15068,7 @@ module perturbation
                    !
                    !$omp parallel do private(icoeff,jcoeff) shared(hvib_t) schedule(dynamic)
                    do icoeff=1,mdimen
-                     do jcoeff=1,icoeff
+                     do jcoeff=1,mdimen
                        hvib_t(jcoeff,icoeff) = hvib_t(jcoeff,icoeff)+f_t*gvib_t(jcoeff,icoeff)
                      enddo
                    enddo
@@ -15083,18 +15093,18 @@ module perturbation
             !
             if ( .not.job%IOmatelem_divide.and..not.job%IOmatelem_split ) then
               !
-              if (this_image().eq.1) then
-                !$omp parallel do private(icoeff,jcoeff) schedule(dynamic)
-                do icoeff=1,mdimen
-                  do jcoeff=1,icoeff
-                    hvib%me(jcoeff,icoeff) = hvib_t(jcoeff,icoeff)+gvib_t(jcoeff,icoeff)
-                    hvib%me(icoeff,jcoeff) = hvib%me(jcoeff,icoeff)
-                  enddo
+              !$omp parallel do private(icoeff,jcoeff) schedule(dynamic)
+              do icoeff=startdim, enddim
+                do jcoeff=1,mdimen
+                  hvib%me(jcoeff,icoeff) = hvib_t(jcoeff,icoeff)+gvib_t(jcoeff,icoeff)
+                  !hvib%me(icoeff,jcoeff) = hvib%me(jcoeff,icoeff)
                 enddo
-                !$omp end parallel do
-              endif
+              enddo
+              !$omp end parallel do
               !
             endif
+            !
+            call co_gather(hvib%me)
             !
             deallocate(hvib_t,gvib_t,fvib_t)
             call ArrayStop('hvib-fields')
@@ -15201,7 +15211,7 @@ module perturbation
                 !
                 !$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
                 do icoeff=startdim,enddim
-                  do jcoeff=1,icoeff
+                  do jcoeff=1,mdimen
                     extF_t(jcoeff,icoeff) = extF_t(jcoeff,icoeff) + extF_r(jcoeff,icoeff)
                   enddo
                 enddo
@@ -15213,17 +15223,17 @@ module perturbation
               ! Gather matrix to root
               call co_gather(extF_t)
               !
-              if (this_image().eq.1) then
-                call TimerStart('iterm_over_extFN_res')
-                !$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
-                do icoeff=1,mdimen
-                  do jcoeff=1,icoeff-1
-                    extF_t(icoeff,jcoeff) = extF_t(jcoeff,icoeff)
-                  enddo
-                enddo
-                !$omp end parallel do
-                call TimerStop('iterm_over_extFN_res')
-              endif
+              !if (this_image().eq.1) then
+              !  call TimerStart('iterm_over_extFN_res')
+              !  !$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
+              !  do icoeff=1,mdimen
+              !    do jcoeff=1,icoeff-1
+              !      extF_t(icoeff,jcoeff) = extF_t(jcoeff,icoeff)
+              !    enddo
+              !  enddo
+              !  !$omp end parallel do
+              !  call TimerStop('iterm_over_extFN_res')
+              !endif
               !
               call TimerStart('store_matelem_ext_2') !AT
               if (this_image().eq.1) then !AT
@@ -15594,10 +15604,15 @@ module perturbation
           !
           !ib0 = icoefficoeff1(icoeff)
           !
-          do jcoeff=1,icoeff
+          do jcoeff=1,mdimen
             !
-            iroot = icoeff2iroot(1,icoeff)
-            jroot = icoeff2iroot(1,jcoeff)
+            if (jcoeff.le.icoeff) then
+              iroot = icoeff2iroot(1,icoeff)
+              jroot = icoeff2iroot(1,jcoeff)
+            else
+              iroot = icoeff2iroot(1,jcoeff)
+              jroot = icoeff2iroot(1,icoeff)
+            endif
             !
             f_t = matclass(1,iroot,jroot)
             !
@@ -15605,8 +15620,13 @@ module perturbation
             !
             do iclasses = 2,Nclasses
               !
-              iroot = icoeff2iroot(iclasses,icoeff)
-              jroot = icoeff2iroot(iclasses,jcoeff)
+              if (jcoeff.le.icoeff) then
+                iroot = icoeff2iroot(iclasses,icoeff)
+                jroot = icoeff2iroot(iclasses,jcoeff)
+              else
+                iroot = icoeff2iroot(iclasses,jcoeff)
+                jroot = icoeff2iroot(iclasses,icoeff)
+              endif
               !
               !f_prod(iclasses) = mat_tt(iclasses)%coeffs(iroot,jroot)
               !
@@ -15618,7 +15638,7 @@ module perturbation
             !
             !field(jcoeff,icoeff) = field(jcoeff,icoeff)+f_t
             !
-            !field(jcoeff,icoeff) = f_t
+            field(jcoeff,icoeff) = f_t
             !
           enddo
         enddo
