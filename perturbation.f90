@@ -15606,13 +15606,8 @@ module perturbation
           !
           do jcoeff=1,mdimen
             !
-            if (jcoeff.le.icoeff) then
-              iroot = icoeff2iroot(1,icoeff)
-              jroot = icoeff2iroot(1,jcoeff)
-            else
-              iroot = icoeff2iroot(1,jcoeff)
-              jroot = icoeff2iroot(1,icoeff)
-            endif
+            iroot = icoeff2iroot(1,icoeff)
+            jroot = icoeff2iroot(1,jcoeff)
             !
             f_t = matclass(1,iroot,jroot)
             !
@@ -15620,13 +15615,8 @@ module perturbation
             !
             do iclasses = 2,Nclasses
               !
-              if (jcoeff.le.icoeff) then
-                iroot = icoeff2iroot(iclasses,icoeff)
-                jroot = icoeff2iroot(iclasses,jcoeff)
-              else
-                iroot = icoeff2iroot(iclasses,jcoeff)
-                jroot = icoeff2iroot(iclasses,icoeff)
-              endif
+              iroot = icoeff2iroot(iclasses,icoeff)
+              jroot = icoeff2iroot(iclasses,jcoeff)
               !
               !f_prod(iclasses) = mat_tt(iclasses)%coeffs(iroot,jroot)
               !
