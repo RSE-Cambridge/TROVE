@@ -13,6 +13,7 @@
     use dipole, only: dm_tranint,dm_analysis_density
     use refinement, only : refinement_by_fit,external_expectation_values
     use tran, only : TRconvert_matel_j0_eigen,TRconvert_repres_J0_to_contr
+    use coarray_aux, only: proc_rank,co_init_comms,co_finalize_comms
 
     implicit none
 
@@ -179,13 +180,14 @@
          return 
       endif
       !
+      call co_init_comms()
       if (job%contrci_me_fast) then 
-        if (this_image() .eq. 1) then
+        if (proc_rank.eq.0) then
         !
           call PTstore_contr_matelem(j)
         endif
 
-        sync all
+        !sync all
         !
         call PTcontracted_matelem_class_fast(j) 
         !
@@ -195,7 +197,7 @@
         !
       endif
       !
-      if (this_image() .eq. 1) then!AT
+      if (proc_rank.eq.0) then!AT
         call PThamiltonian_contract(j)
         !
         ! convert to j=0 representation as part of the first step j=0 calculation
@@ -218,6 +220,7 @@
         write(out,"(/'End of TROVE')") 
       endif 
       !
+      call co_finalize_comms()
     end subroutine pt 
 
 
