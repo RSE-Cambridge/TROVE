@@ -3,13 +3,15 @@ module coarray_aux
   use timer
   implicit none
 
-  public co_init_comms, co_finalize_comms, co_init_distr, co_distr_data
+  public co_init_comms, co_finalize_comms, co_init_distr, co_distr_data, co_write_matrix_distr
+  public co_create_type
 
   public send_or_recv, comm_size, proc_rank
+  public co_startdim, co_enddim
 
-  !interface co_sum
-  !  module procedure :: co_sum_double
-  !end interface
+  interface co_sum
+    module procedure :: co_sum_double
+  end interface
 
   !interface co_max
   !  module procedure :: co_max_double
@@ -22,38 +24,40 @@ module coarray_aux
 
   integer,dimension(:),allocatable  :: proc_sizes, proc_offsets, send_or_recv
   integer                           :: comm_size, proc_rank
+  integer                           :: co_startdim, co_enddim
   logical                           :: comms_inited = .false., distr_inited=.false.
+  type(MPI_Datatype) :: mpitype_column
 
 contains
 
-  !subroutine co_sum_double(x, result_image)
-  !  real*8, intent(inout), dimension(:,:) :: x
-  !  integer, optional :: result_image
-  !  integer :: i
-  !  integer, save :: result_image_mpi[*]
+  subroutine co_sum_double(x, result_image)
+    real*8, intent(inout), dimension(:,:) :: x
+    integer, optional :: result_image
+    integer :: i
+    !integer, save :: result_image_mpi[*]
 
-  !  call TimerStart('co_sum_double')
+    call TimerStart('co_sum_double')
 
-  !  if (present(result_image)) then
+    !if (present(result_image)) then
 
-  !    if (this_image() .eq. 1) then
-  !      call mpi_comm_rank(mpi_comm_world, result_image_mpi)
-  !      do i = 2, num_images()
-  !       result_image_mpi[i] = result_image_mpi
-  !      end do
-  !    end if
-  !    sync all
+      !if (this_image() .eq. 1) then
+      !  call mpi_comm_rank(mpi_comm_world, result_image_mpi)
+      !  do i = 2, num_images()
+      !   result_image_mpi[i] = result_image_mpi
+      !  end do
+      !end if
+      !sync all
 
-  !    if (this_image() .eq. 1) then
-  !      call mpi_reduce(mpi_in_place, x, size(x), mpi_double_precision, mpi_sum, result_image_mpi, mpi_comm_world)
-  !    else
-  !      call mpi_reduce(x, x, size(x), mpi_double_precision, mpi_sum, result_image_mpi, mpi_comm_world)
-  !    endif
-  !  else
-  !    call mpi_allreduce(mpi_in_place, x, size(x), mpi_double_precision, mpi_sum, mpi_comm_world)
-  !  end if
-  !  call TimerStop('co_sum_double')
-  !end subroutine
+      if (proc_rank .eq. 0) then
+        call mpi_reduce(mpi_in_place, x, size(x), mpi_double_precision, mpi_sum, 0, mpi_comm_world)
+      else
+        call mpi_reduce(x, x, size(x), mpi_double_precision, mpi_sum, 0, mpi_comm_world)
+      endif
+    !else
+    !  call mpi_allreduce(mpi_in_place, x, size(x), mpi_double_precision, mpi_sum, mpi_comm_world)
+    !end if
+    call TimerStop('co_sum_double')
+  end subroutine
 
   !subroutine co_max_double(x, result_image)
   !  real*8, intent(inout), dimension(:,:) :: x
@@ -206,6 +210,8 @@ contains
       startdim = starts(proc_index)
       enddim = ends(proc_index)
 
+      co_startdim = startdim
+      co_enddim = enddim
 
       !if (mod(comm_size,2)) then
       !  do i=1,comm_size
@@ -252,7 +258,7 @@ contains
           endif
         endif
 
-        if (proc_rank .eq. 0) write(*,*) "TOCALC:", i, to_calc, comm_size, mod(comm_size,4)
+        !if (proc_rank .eq. 0) write(*,*) "TOCALC:", i, to_calc, comm_size, mod(comm_size,4)
 
         if (i.eq.proc_index) then
           send_or_recv(i) = 0
@@ -292,6 +298,8 @@ contains
     !!!write(*,*) "DISTR1", proc_rank, send_or_recv
     !!!write(*,*) "DISTR2", proc_rank, blocksize, lb, ub
     !!!write(*,*) "DISTR3", proc_rank, shape(x), shape(tmp)
+    call TimerStart('MPI_transpose')
+    call TimerStart('MPI_transpose_sendrecv')
 
     do i=1,comm_size
       if (send_or_recv(i).eq.1) then
@@ -304,6 +312,8 @@ contains
     enddo
 
     call mpi_waitall(comm_size,reqs,mpi_statuses_ignore,ierr)
+    call TimerStop('MPI_transpose_sendrecv')
+    call TimerStart('MPI_transpose_local')
 
     do i=1,comm_size
       if (send_or_recv(i).eq.-1) then
@@ -317,7 +327,54 @@ contains
         !$omp end parallel do
       endif
     enddo
+    call TimerStop('MPI_transpose_local')
+    call TimerStop('MPI_transpose')
 
   end subroutine co_distr_data
+
+  subroutine co_write_matrix_distr(x, longdim, lb, ub, outfile)
+    use accuracy
+
+    real(rk),dimension(:,lb:),intent(in) :: x
+    integer,intent(in)                :: longdim, lb, ub
+    type(MPI_File),intent(in) :: outfile
+    integer :: ierr, mpi_real_size, writecount
+    integer(kind=MPI_Offset_kind) :: mpioffset,mpi_write_offsetkind
+    type(MPI_Status) :: writestat
+    writestat%count_lo = 0
+    writestat%count_hi_and_cancelled = 0
+    writestat%MPI_SOURCE = 0
+    writestat%MPI_TAG = 0
+    writestat%MPI_ERROR = 0
+
+
+    call TimerStart('MPI_write')
+
+    if (proc_rank .eq. 0) then
+      call mpi_file_get_size(outfile,mpioffset,ierr)
+    endif
+
+    call mpi_bcast(mpioffset,1,mpi_offset,0,mpi_comm_world,ierr)
+
+    call MPI_Type_size(mpi_double_precision, mpi_real_size,ierr)
+
+    mpioffset = mpioffset + proc_rank * (longdim * int(1+real(longdim/comm_size),mpi_offset_kind) * mpi_real_size)
+
+    writecount = int(1+real(longdim/comm_size))
+    mpi_write_offsetkind = int(1+real(longdim/comm_size),MPI_Offset_kind)
+    call MPI_File_write_at_all(outfile,mpioffset,x,writecount,mpitype_column,writestat,ierr)
+
+    call TimerStop('MPI_write')
+
+  end subroutine co_write_matrix_distr
+
+  subroutine co_create_type(extent)
+    integer, intent(in) :: extent
+    integer :: ierr
+
+    call MPI_Type_contiguous(extent, mpi_double_precision, mpitype_column, ierr)
+    call MPI_Type_commit(mpitype_column, ierr)
+
+  end subroutine co_create_type
 
 end module

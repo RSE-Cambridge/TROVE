@@ -39,6 +39,7 @@
       ! Begin with constants intitialization
       !
       call TimerStart('TROVE')
+      if (proc_rank.eq.0) then
       !
       call accuracyInitialize
       !
@@ -179,6 +180,7 @@
          call TRconvert_matel_j0_eigen(j)
          return 
       endif
+      endif!mpi
       !
       call co_init_comms()
       if (job%contrci_me_fast) then 
@@ -197,8 +199,8 @@
         !
       endif
       !
-      if (proc_rank.eq.0) then!AT
         call PThamiltonian_contract(j)
+      if (proc_rank.eq.0) then!AT
         !
         ! convert to j=0 representation as part of the first step j=0 calculation
         !

@@ -6384,6 +6384,7 @@ module perturbation
 ! Here we construct the Hamiltonian matrix in the contracted basis set  representation
 !
   subroutine PThamiltonian_contract(jrot)
+    use coarray_aux
 
     integer(ik),intent(in) :: jrot ! rotational quantum number
     !
@@ -6398,7 +6399,7 @@ module perturbation
     integer(ik),allocatable :: ijterm(:,:),k_row(:,:),bterm(:,:)
     !
     real(rk) :: zpe
-    integer  :: slevel,dimen_s,max_dim,iterm,jterm,total_roots,icontr
+    integer  :: slevel,dimen_s,max_dim,iterm,jterm,total_roots,icontr,ierr
     !
     integer(ik) :: iunit,unitO,unitC,rec_len,irec_len,chkptIO
     integer(ik) :: ncontr,maxcontr,maxcontr0
@@ -6444,7 +6445,7 @@ module perturbation
     ! Prepare the storing information if necessary:
     !
     if (any(trim(job%IOeigen_action)==(/'SAVE','APPEND'/))) then
-      call check_point_active_space(job%IOeigen_action)
+      if (proc_rank.eq.0) call check_point_active_space(job%IOeigen_action)
     endif 
     !
     !
@@ -6570,7 +6571,7 @@ module perturbation
       !
       if (any(trim(job%IOeigen_action)==(/'SAVE','APPEND'/))) then
         !
-        call check_point_active_space('CLOSE')
+        if (proc_rank.eq.0) call check_point_active_space('CLOSE')
         !
       endif 
       !
@@ -6764,7 +6765,7 @@ module perturbation
       endif 
       !
       !$omp do private(irow,isym,dimen_s,iterm,ielem,k_i,dimen_row,istart,iend) schedule(static) 
-      do irow = 1,dimen
+      do irow = 1,dimen!co_startdim,co_enddim
         !
         ! ithread = omp_get_thread_num()
         !
@@ -7133,260 +7134,115 @@ module perturbation
       !
     endif
     !
+    do isym = 1,sym%Nrepresen
+      call co_sum(smat(isym)%coeffs,0)
+    enddo
     call TimerStop('Calculating the Hamiltonian matrix')
     !
     if (job%verbose>=4) write(out,"('...done!')")
-    ! Correction for the case we do not compute the vibrational part of the 
-    ! Hamiltonian:
-    !
-    if (.not.PTvibrational_me_calc) then 
+    if (proc_rank.eq.0) then!mpiio
+      ! Correction for the case we do not compute the vibrational part of the 
+      ! Hamiltonian:
       !
-      if (job%verbose>=3) write(out,"('Diagonal correction...')")
-      !
-      do isym = 1,sym%Nrepresen
+      if (.not.PTvibrational_me_calc) then 
         !
-        if (.not.job%select_gamma(isym)) cycle
+        if (job%verbose>=3) write(out,"('Diagonal correction...')")
         !
-        !$omp parallel do private(ielem,icase,slevel,k_i,iterm) 
-        do ielem = 1,Nterms(isym)
-           !
-           icase    = PT%symactive_space(isym)%sym_N(ielem,1)
-           slevel   = PT%contractive_space(1,icase)
-           !
-           k_i = k_row(isym,ielem)
-           !
-           iterm = ielem - kblock(isym,max(k_i-2,0),1) + 1
-           !
-           smat(isym)%coeffs(ielem,iterm) = smat(isym)%coeffs(ielem,iterm) + &
-                                            contr(1)%eigen(slevel)%value
-        enddo
-        !$omp end parallel do
-        !
-      enddo
-      !
-    endif 
-    !
-    ! Loop over all symmetries and diagonalize or save to disk the Hamiltonian matrices. 
-    ! For diagonalization, the smat-object is copied to the real matrix a. 
-    ! For storing only the lower part is saved. 
-    !
-    rlevel = PTNlevels
-    total_roots = PTNroots
-    zpe = 0 
-    !
-    do isym = 1,sym%Nrepresen
-      !
-      if (.not.job%select_gamma(isym)) cycle
-      !
-      dimen_s = PT%Max_sym_levels(isym)
-      !
-      allocate (bterm(dimen_s,2),stat=alloc)
-      call ArrayStart('PThamiltonian_contract:bterm',alloc,size(bterm),kind(bterm))
-      !
-      if (job%sparse) then 
-        !
-        dimen_maxrow = 1
-        do k_i = 0,jrot
-          dimen_row = kblock(isym,min(k_i+2,jrot),2)-kblock(isym,max(k_i-2,0),1)+1
-          dimen_maxrow = max(dimen_maxrow,dimen_row)
-          if (job%verbose>=6) write(out,"('k_i = ',i,'; dimen_row = ',i)") k_i,dimen_row
-        enddo
-        !
-        !if (job%nroots(isym)/=1000000) nroots = min(job%nroots(isym),dimen_s)
-        !
-        nroots = min(job%nroots(isym),dimen_s)
-        if (job%nroots(isym)==0.or.job%nroots(isym)==1000000) nroots=dimen_maxrow
-        !        
-        dimen_maxrow = max(dimen_maxrow,nroots)
-        !
-        if (only_store.or.no_diagonalization) then 
+        do isym = 1,sym%Nrepresen
           !
-          allocate (a(dimen_s,1),stat=alloc)
-          call ArrayStart('PThamiltonian_contract:a',alloc,size(a),kind(a))
+          if (.not.job%select_gamma(isym)) cycle
           !
-        else 
-          !
-          matsize = int(dimen_s,hik)*int(dimen_maxrow,hik)
-          if (job%verbose>=4) write(out,"('Allocate array a (sparse)',i,'x',i,' = ',i)") dimen_s,dimen_maxrow,matsize
-          allocate (a(dimen_s,dimen_maxrow),stat=alloc)
-          !
-          call ArrayStart('PThamiltonian_contract:a',alloc,1,kind(a),matsize)
-          !
-        endif
-        !
-      else 
-        !
-        matsize = 1
-        !
-        if (only_store.or.no_diagonalization) then 
-          !
-          allocate (a(dimen_s,1),stat=alloc)
-          call ArrayStart('PThamiltonian_contract:a',alloc,size(a),kind(a))
-          !
-        elseif (.not.only_store) then 
-          !
-          matsize = int(dimen_s,hik)*int(dimen_s,hik)
-          if (job%verbose>=4) write(out,"('Allocate array a',i,'x',i,' = ',i)") dimen_s,dimen_s,matsize
-          allocate (a(dimen_s,dimen_s),stat=alloc)
-          !
-          call ArrayStart('PThamiltonian_contract:a',alloc,1,kind(a),matsize)
-          !
-        endif
-        !
-      endif
-      !
-      if (job%verbose>=4) call MemoryReport
-      !
-      if (job%verbose>=4) write(out,"(/'   Prepare the sparse representation address-array...')")
-      !
-      !$omp parallel do private(ielem,icase,slevel,k_i,dimen_row,istart,iend) shared(bterm)
-      do ielem = 1,Nterms(isym)
-         !
-         icase    = PT%symactive_space(isym)%sym_N(ielem,1)
-         slevel   = PT%contractive_space(1,icase)
-         !
-         k_i = k_row(isym,ielem)
-         !
-         dimen_row = kblock(isym,k_i,2)-kblock(isym,max(k_i-2,0),1)+1
-         !
-         bterm(ielem,1) = kblock(isym,max(k_i-2,   0),1)
-         bterm(ielem,2) = kblock(isym,min(k_i+2,jrot),2)
-         !
-      enddo
-      !$omp end parallel do
-      !
-      if (job%verbose>=4) write(out,"(/'   ...done!')")
-      !
-      !
-      ! prepare a unit for saving the matrix to the disk, if required 
-      !
-      if (only_store) then 
-        !
-        write(unitfname,"('matrix for j = ',i6,' sym = ',i4)") jrot,isym
-        !
-        call IOStart(trim(unitfname),chkptIO)
-        !
-        write(jchar, '(i4)') jrot
-        write(symchar, '(i4)') isym
-        filename = trim(job%matrix_file)//trim(adjustl(jchar))//'_'//trim(adjustl(symchar))//'.chk'
-        !
-        open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=filename)
-        !
-        write(chkptIO) dimen_s
-        !
-        write(chkptIO) 'Lower'
-        if (job%sparse) then 
-          write(chkptIO) 'spar'
-          write(chkptIO) 'Start bterm'
-          write(chkptIO) bterm
-        else
-          write(chkptIO) 'full'
-        endif
-        !
-        write(chkptIO) 'Start matrix'
-        !
-        do ielem = 1,dimen_s
-           !
-           if (job%sparse) then
-             !
-             dimen_row = ielem-bterm(ielem,1)+1
-             !
-             a(1:dimen_row,1) = smat(isym)%coeffs(ielem,1:dimen_row)
-             !
-             do jelem = ielem+1,bterm(ielem,2)
-               !
-               k_j = jelem - bterm(ielem,1) + 1
-               k_i = ielem - bterm(jelem,1) + 1
-               !
-               a(k_j,1) = smat(isym)%coeffs(jelem,k_i)
-               !
-             enddo
-             !
-             dimen_row = bterm(ielem,2)-bterm(ielem,1)+1
-             !
-             write(chkptIO) a(1:dimen_row,1)
-             !
-           else
-             !
-             a = 0
+          !$omp parallel do private(ielem,icase,slevel,k_i,iterm) 
+          do ielem = 1,Nterms(isym)
              !
              icase    = PT%symactive_space(isym)%sym_N(ielem,1)
              slevel   = PT%contractive_space(1,icase)
              !
              k_i = k_row(isym,ielem)
              !
-             dimen_row = kblock(isym,k_i,2)-kblock(isym,max(k_i-2,0),1)+1
+             iterm = ielem - kblock(isym,max(k_i-2,0),1) + 1
              !
-             istart = kblock(isym,max(k_i-2,0),1)
-             iend   = kblock(isym,k_i,2)
-             !
-             a(istart:iend,1) = smat(isym)%coeffs(ielem,1:dimen_row)
-             !
-             write(chkptIO) a
-             !
-           endif
-           !
+             smat(isym)%coeffs(ielem,iterm) = smat(isym)%coeffs(ielem,iterm) + &
+                                              contr(1)%eigen(slevel)%value
+          enddo
+          !$omp end parallel do
+          !
         enddo
         !
-        nroots = 0
+      endif 
+      !
+      ! Loop over all symmetries and diagonalize or save to disk the Hamiltonian matrices. 
+      ! For diagonalization, the smat-object is copied to the real matrix a. 
+      ! For storing only the lower part is saved. 
+      !
+      rlevel = PTNlevels
+      total_roots = PTNroots
+      zpe = 0 
+      !
+      do isym = 1,sym%Nrepresen
         !
-        write(chkptIO) 'End matrix'
-        close(chkptIO,status='keep')
+        if (.not.job%select_gamma(isym)) cycle
         !
-        deallocate (smat(isym)%coeffs)
-        call Arraystop('PThamiltonian_contract:smat'//sym%label(isym))
+        dimen_s = PT%Max_sym_levels(isym)
         !
-      elseif (no_diagonalization) then 
+        allocate (bterm(dimen_s,2),stat=alloc)
+        call ArrayStart('PThamiltonian_contract:bterm',alloc,size(bterm),kind(bterm))
         !
-        do ielem = 1,Nterms(isym)
-           !
-           icase    = PT%symactive_space(isym)%sym_N(ielem,1)
-           slevel   = PT%contractive_space(1,icase)
-           !
-           k_i = k_row(isym,ielem)
-           !
-           dimen_row = kblock(isym,k_i,2)-kblock(isym,max(k_i-2,0),1)+1
-           !
-           if (job%sparse) then 
-             !
-             dimen_row = ielem-bterm(ielem,1)+1
-             !
-             a(ielem,1) = smat(isym)%coeffs(ielem,dimen_row)
-             !
-           else
-             !
-             istart = kblock(isym,max(k_i-2,0),1)
-             iend   = ielem-istart+1
-             !
-             a(ielem,1) = smat(isym)%coeffs(ielem,iend)
-             !
-           endif 
-           !
-        enddo
+        if (job%sparse) then 
+          !
+          dimen_maxrow = 1
+          do k_i = 0,jrot
+            dimen_row = kblock(isym,min(k_i+2,jrot),2)-kblock(isym,max(k_i-2,0),1)+1
+            dimen_maxrow = max(dimen_maxrow,dimen_row)
+            if (job%verbose>=6) write(out,"('k_i = ',i,'; dimen_row = ',i)") k_i,dimen_row
+          enddo
+          !
+          !if (job%nroots(isym)/=1000000) nroots = min(job%nroots(isym),dimen_s)
+          !
+          nroots = min(job%nroots(isym),dimen_s)
+          if (job%nroots(isym)==0.or.job%nroots(isym)==1000000) nroots=dimen_maxrow
+          !        
+          dimen_maxrow = max(dimen_maxrow,nroots)
+          !
+          if (only_store.or.no_diagonalization) then 
+            !
+            allocate (a(dimen_s,1),stat=alloc)
+            call ArrayStart('PThamiltonian_contract:a',alloc,size(a),kind(a))
+            !
+          else 
+            !
+            matsize = int(dimen_s,hik)*int(dimen_maxrow,hik)
+            if (job%verbose>=4) write(out,"('Allocate array a (sparse)',i,'x',i,' = ',i)") dimen_s,dimen_maxrow,matsize
+            allocate (a(dimen_s,dimen_maxrow),stat=alloc)
+            !
+            call ArrayStart('PThamiltonian_contract:a',alloc,1,kind(a),matsize)
+            !
+          endif
+          !
+        else 
+          !
+          matsize = 1
+          !
+          if (only_store.or.no_diagonalization) then 
+            !
+            allocate (a(dimen_s,1),stat=alloc)
+            call ArrayStart('PThamiltonian_contract:a',alloc,size(a),kind(a))
+            !
+          elseif (.not.only_store) then 
+            !
+            matsize = int(dimen_s,hik)*int(dimen_s,hik)
+            if (job%verbose>=4) write(out,"('Allocate array a',i,'x',i,' = ',i)") dimen_s,dimen_s,matsize
+            allocate (a(dimen_s,dimen_s),stat=alloc)
+            !
+            call ArrayStart('PThamiltonian_contract:a',alloc,1,kind(a),matsize)
+            !
+          endif
+          !
+        endif
         !
-        !do ielem = 1,dimen_s
-        !   !
-        !   if (job%sparse) then
-        !     !
-        !     dimen_row = ielem-bterm(ielem,1)+1
-        !     !
-        !     a(ielem,1) = smat(isym)%coeffs(ielem,dimen_row)
-        !     !
-        !   else
-        !     !
-        !     a(ielem,1) = smat(isym)%coeffs(ielem,ielem)
-        !     !
-        !   endif
-        !   !
-        !enddo
+        if (job%verbose>=4) call MemoryReport
         !
-        call diagonalization_contract(jrot,isym,dimen_s,a,zpe,rlevel,total_roots,bterm,k_row(isym,1:dimen_s)) 
-        !
-      else ! diagonalize
-        !
-        a = 0 
-        !
-        if (job%verbose>=3) write(out,"(/'Prepare the lower part of the matrix...')")
+        if (job%verbose>=4) write(out,"(/'   Prepare the sparse representation address-array...')")
         !
         !$omp parallel do private(ielem,icase,slevel,k_i,dimen_row,istart,iend) shared(bterm)
         do ielem = 1,Nterms(isym)
@@ -7398,95 +7254,245 @@ module perturbation
            !
            dimen_row = kblock(isym,k_i,2)-kblock(isym,max(k_i-2,0),1)+1
            !
-           if (job%sparse) then 
-             !
-             a(ielem,1:dimen_row) = smat(isym)%coeffs(ielem,1:dimen_row)
-             !
-           else
-             !
-             istart = kblock(isym,max(k_i-2,0),1)
-             iend   = kblock(isym,k_i,2)
-             !
-             a(ielem,istart:iend) = smat(isym)%coeffs(ielem,1:dimen_row)
-             !
-           endif 
+           bterm(ielem,1) = kblock(isym,max(k_i-2,   0),1)
+           bterm(ielem,2) = kblock(isym,min(k_i+2,jrot),2)
            !
         enddo
         !$omp end parallel do
         !
-        if (job%verbose>=3) write(out,"('...and the upper part...')")
+        if (job%verbose>=4) write(out,"(/'   ...done!')")
         !
-        !$omp parallel do private(ielem,k_i,istart,jelem,k_j,jstart,iterm,jterm) shared(a) schedule(dynamic)
-        do ielem = 1,Nterms(isym)
-           !
-           if (job%sparse) then 
+        !
+        ! prepare a unit for saving the matrix to the disk, if required 
+        !
+        if (only_store) then 
+          !
+          write(unitfname,"('matrix for j = ',i6,' sym = ',i4)") jrot,isym
+          !
+          call IOStart(trim(unitfname),chkptIO)
+          !
+          write(jchar, '(i4)') jrot
+          write(symchar, '(i4)') isym
+          filename = trim(job%matrix_file)//trim(adjustl(jchar))//'_'//trim(adjustl(symchar))//'.chk'
+          !
+          open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=filename)
+          !
+          write(chkptIO) dimen_s
+          !
+          write(chkptIO) 'Lower'
+          if (job%sparse) then 
+            write(chkptIO) 'spar'
+            write(chkptIO) 'Start bterm'
+            write(chkptIO) bterm
+          else
+            write(chkptIO) 'full'
+          endif
+          !
+          write(chkptIO) 'Start matrix'
+          !
+          do ielem = 1,dimen_s
+             !
+             if (job%sparse) then
+               !
+               dimen_row = ielem-bterm(ielem,1)+1
+               !
+               a(1:dimen_row,1) = smat(isym)%coeffs(ielem,1:dimen_row)
+               !
+               do jelem = ielem+1,bterm(ielem,2)
+                 !
+                 k_j = jelem - bterm(ielem,1) + 1
+                 k_i = ielem - bterm(jelem,1) + 1
+                 !
+                 a(k_j,1) = smat(isym)%coeffs(jelem,k_i)
+                 !
+               enddo
+               !
+               dimen_row = bterm(ielem,2)-bterm(ielem,1)+1
+               !
+               write(chkptIO) a(1:dimen_row,1)
+               !
+             else
+               !
+               a = 0
+               !
+               icase    = PT%symactive_space(isym)%sym_N(ielem,1)
+               slevel   = PT%contractive_space(1,icase)
+               !
+               k_i = k_row(isym,ielem)
+               !
+               dimen_row = kblock(isym,k_i,2)-kblock(isym,max(k_i-2,0),1)+1
+               !
+               istart = kblock(isym,max(k_i-2,0),1)
+               iend   = kblock(isym,k_i,2)
+               !
+               a(istart:iend,1) = smat(isym)%coeffs(ielem,1:dimen_row)
+               !
+               write(chkptIO) a
+               !
+             endif
+             !
+          enddo
+          !
+          nroots = 0
+          !
+          write(chkptIO) 'End matrix'
+          close(chkptIO,status='keep')
+          !
+          deallocate (smat(isym)%coeffs)
+          call Arraystop('PThamiltonian_contract:smat'//sym%label(isym))
+          !
+        elseif (no_diagonalization) then 
+          !
+          do ielem = 1,Nterms(isym)
+             !
+             icase    = PT%symactive_space(isym)%sym_N(ielem,1)
+             slevel   = PT%contractive_space(1,icase)
              !
              k_i = k_row(isym,ielem)
-             istart = kblock(isym,max(k_i-2,0),1)
              !
-             do jelem = ielem+1,kblock(isym,min(k_i+2,jrot),2)
-               k_j = k_row(isym,jelem)
-               jstart  = kblock(isym,max(k_j-2,0),1)
+             dimen_row = kblock(isym,k_i,2)-kblock(isym,max(k_i-2,0),1)+1
+             !
+             if (job%sparse) then 
                !
-               iterm = ielem-jstart+1
-               jterm = jelem-istart+1
+               dimen_row = ielem-bterm(ielem,1)+1
                !
-               a(ielem,jterm) = a(jelem,iterm)
+               a(ielem,1) = smat(isym)%coeffs(ielem,dimen_row)
                !
-             enddo
+             else
+               !
+               istart = kblock(isym,max(k_i-2,0),1)
+               iend   = ielem-istart+1
+               !
+               a(ielem,1) = smat(isym)%coeffs(ielem,iend)
+               !
+             endif 
              !
-           else
+          enddo
+          !
+          !do ielem = 1,dimen_s
+          !   !
+          !   if (job%sparse) then
+          !     !
+          !     dimen_row = ielem-bterm(ielem,1)+1
+          !     !
+          !     a(ielem,1) = smat(isym)%coeffs(ielem,dimen_row)
+          !     !
+          !   else
+          !     !
+          !     a(ielem,1) = smat(isym)%coeffs(ielem,ielem)
+          !     !
+          !   endif
+          !   !
+          !enddo
+          !
+          call diagonalization_contract(jrot,isym,dimen_s,a,zpe,rlevel,total_roots,bterm,k_row(isym,1:dimen_s)) 
+          !
+        else ! diagonalize
+          !
+          a = 0 
+          !
+          if (job%verbose>=3) write(out,"(/'Prepare the lower part of the matrix...')")
+          !
+          !$omp parallel do private(ielem,icase,slevel,k_i,dimen_row,istart,iend) shared(bterm)
+          do ielem = 1,Nterms(isym)
              !
-             a(1:ielem-1,ielem) = a(ielem,1:ielem-1)
+             icase    = PT%symactive_space(isym)%sym_N(ielem,1)
+             slevel   = PT%contractive_space(1,icase)
              !
-           endif 
-           !
-        enddo
-        !$omp end parallel do
+             k_i = k_row(isym,ielem)
+             !
+             dimen_row = kblock(isym,k_i,2)-kblock(isym,max(k_i-2,0),1)+1
+             !
+             if (job%sparse) then 
+               !
+               a(ielem,1:dimen_row) = smat(isym)%coeffs(ielem,1:dimen_row)
+               !
+             else
+               !
+               istart = kblock(isym,max(k_i-2,0),1)
+               iend   = kblock(isym,k_i,2)
+               !
+               a(ielem,istart:iend) = smat(isym)%coeffs(ielem,1:dimen_row)
+               !
+             endif 
+             !
+          enddo
+          !$omp end parallel do
+          !
+          if (job%verbose>=3) write(out,"('...and the upper part...')")
+          !
+          !$omp parallel do private(ielem,k_i,istart,jelem,k_j,jstart,iterm,jterm) shared(a) schedule(dynamic)
+          do ielem = 1,Nterms(isym)
+             !
+             if (job%sparse) then 
+               !
+               k_i = k_row(isym,ielem)
+               istart = kblock(isym,max(k_i-2,0),1)
+               !
+               do jelem = ielem+1,kblock(isym,min(k_i+2,jrot),2)
+                 k_j = k_row(isym,jelem)
+                 jstart  = kblock(isym,max(k_j-2,0),1)
+                 !
+                 iterm = ielem-jstart+1
+                 jterm = jelem-istart+1
+                 !
+                 a(ielem,jterm) = a(jelem,iterm)
+                 !
+               enddo
+               !
+             else
+               !
+               a(1:ielem-1,ielem) = a(ielem,1:ielem-1)
+               !
+             endif 
+             !
+          enddo
+          !$omp end parallel do
+          !
+          ! Diagonalization
+          !
+          deallocate (smat(isym)%coeffs)
+          call Arraystop('PThamiltonian_contract:smat'//sym%label(isym))
+          !
+          if (job%verbose>=3) write(out,"('Diagonalization...')")
+          !
+          if (job%verbose>=1) then 
+             write (out,"(//'Size of the symmetrized hamiltonian = ',i7,' Symmetry = ',a4)") dimen_s,sym%label(isym)
+             ! write (out,"(/'Variation solution (symmetrized):',/'  Gamma    i       value            j  k  t   quanta')") 
+          endif
+          !
+          call diagonalization_contract(jrot,isym,dimen_s,a,zpe,rlevel,total_roots,bterm,k_row(isym,1:dimen_s)) 
+          !
+        endif ! store vs diagonalize
         !
-        ! Diagonalization
+        deallocate (bterm)
+        call ArrayStop('PThamiltonian_contract:bterm')
         !
-        deallocate (smat(isym)%coeffs)
-        call Arraystop('PThamiltonian_contract:smat'//sym%label(isym))
+        !deallocate (smat(isym)%coeffs)
         !
-        if (job%verbose>=3) write(out,"('Diagonalization...')")
-        !
-        if (job%verbose>=1) then 
-           write (out,"(//'Size of the symmetrized hamiltonian = ',i7,' Symmetry = ',a4)") dimen_s,sym%label(isym)
-           ! write (out,"(/'Variation solution (symmetrized):',/'  Gamma    i       value            j  k  t   quanta')") 
+        !if (.not.only_store.and..not.sparse) then 
+        if (allocated(a)) then 
+          call ArrayStop('PThamiltonian_contract:a')
+          deallocate (a)
         endif
         !
-        call diagonalization_contract(jrot,isym,dimen_s,a,zpe,rlevel,total_roots,bterm,k_row(isym,1:dimen_s)) 
+      enddo
+    endif!mpiio
+      !
+      if (any(trim(job%IOeigen_action)==(/'SAVE','APPEND'/))) then
         !
-      endif ! store vs diagonalize
+        if (proc_rank.eq.0) call check_point_active_space('CLOSE')
+        !
+      endif 
       !
-      deallocate (bterm)
-      call ArrayStop('PThamiltonian_contract:bterm')
+      ! close and keep files with the compacted vectors
       !
-      !deallocate (smat(isym)%coeffs)
-      !
-      !if (.not.only_store.and..not.sparse) then 
-      if (allocated(a)) then 
-        call ArrayStop('PThamiltonian_contract:a')
-        deallocate (a)
+      if (job%IOeigen_compress) then
+        !
+        close(unit = unitO,status='keep')
+        close(unit = unitC,status='keep')
+        !
       endif
-      !
-    enddo
-    !
-    if (any(trim(job%IOeigen_action)==(/'SAVE','APPEND'/))) then
-      !
-      call check_point_active_space('CLOSE')
-      !
-    endif 
-    !
-    ! close and keep files with the compacted vectors
-    !
-    if (job%IOeigen_compress) then
-      !
-      close(unit = unitO,status='keep')
-      close(unit = unitC,status='keep')
-      !
-    endif
     !
     ! free more memory 
     do ielem =1,size(contr(0)%rot(:))
@@ -8133,6 +8139,8 @@ module perturbation
   !
   recursive subroutine symm_mat_element_vector_k(jrot,irow,ijterm,func,mat_t,no_diagonalization)
 
+    use coarray_aux
+
     integer(ik),intent(in)   :: jrot,irow,ijterm(:,:)
     real(rk),external      :: func
     real(rk),intent(out)   :: mat_t(:,:,:)
@@ -8145,6 +8153,15 @@ module perturbation
     integer(ik) :: jrow,ideg,jdeg,isym,jsym,iL,iR,iterm,jterm,icontr,jcontr
     real(rk)    :: hcontr(PT%max_deg_size,PT%max_deg_size)
     real(rk)    :: vec_i(PT%max_deg_size),vec_j(PT%max_deg_size)
+    logical :: endit
+    !integer :: ierr
+    !  call mpi_barrier(mpi_comm_world,ierr)
+    !  write(*,*) "CO_DIMS", co_startdim, co_enddim
+    !  write(*,*) "SIZE", size(hvib%me)
+    !  write(*,*) "SHAPE", shape(hvib%me)
+    !  write(*,*) "LBOUND", lbound(hvib%me,1), lbound(hvib%me,2)
+    !  write(*,*) "UBOUND", ubound(hvib%me,1), ubound(hvib%me,2)
+    !  call mpi_barrier(mpi_comm_world,ierr)
       !
       !call TimerStart('Symmetrized Hamiltonian - one column')
       !
@@ -8154,7 +8171,50 @@ module perturbation
       !
       isize = PT%Index_deg(irow)%size1
       !
+      !do jrow = 1,irow
+      !   !
+      !   if ( present(no_diagonalization).and.no_diagonalization.and.jrow/=irow ) cycle
+      !   !
+      !   cnu_j(:) = PT%contractive_space(:,jrow)
+      !   !
+      !   jsize = PT%Index_deg(jrow)%size1 
+      !   !
+      !   do ideg = 1,isize
+      !      !
+      !      deg_i(:) = PT%Index_deg(irow)%icoeffs(:,ideg)
+      !      !
+      !      do jdeg = 1,jsize
+      !         !
+      !         deg_j(:) = PT%Index_deg(jrow)%icoeffs(:,jdeg)
+      !         !
+      !         !iroot = contr(iclass)%iroot(cnu_i(iclass),deg_i(iclass))
+      !         !jroot = contr(iclass)%iroot(cnu_j(iclass),deg_j(iclass))
+      !         !
+      !         icontr = PT%icase2icontr(irow,ideg)
+      !         jcontr = PT%icase2icontr(jrow,jdeg)
+      !         k_i = PT%rot_index(cnu_i(0),deg_i(0))%k
+      !         k_j = PT%rot_index(cnu_j(0),deg_j(0))%k
+      !         tau_i = PT%rot_index(cnu_i(0),deg_i(0))%tau
+      !         tau_j = PT%rot_index(cnu_j(0),deg_j(0))%tau
+      !         !
+      !         ! Matrix elements 
+      !         !
+      !         if (jcontr < co_startdim .or. jcontr > co_enddim) cycle
+      !         hcontr(ideg,jdeg) = func(icontr,jcontr,jrot,k_i,k_j,tau_i,tau_j)
+      !         !
+      !      enddo
+      !      !
+      !   enddo
+      !end do
+      !call co_sum(hcontr)
+      !write(*,*) "SIZE", size(hcontr)
+      !write(*,*) "SHAPE", shape(hcontr)
+      !write(*,*) "LBOUND", lbound(hcontr)
+      !write(*,*) "UBOUND", ubound(hcontr)
+
+    !if (proc_rank.eq.0) then
       do jrow = 1,irow
+         endit = .false.
          !
          if ( present(no_diagonalization).and.no_diagonalization.and.jrow/=irow ) cycle
          !
@@ -8182,11 +8242,17 @@ module perturbation
                !
                ! Matrix elements 
                !
+               if (jcontr < co_startdim .or. jcontr > co_enddim) then
+                 endit = .true.
+                 exit
+               endif
+
                hcontr(ideg,jdeg) = func(icontr,jcontr,jrot,k_i,k_j,tau_i,tau_j)
                !
             enddo
             !
          enddo
+         if (endit) cycle
          !
          do isym = 1,sym%Nrepresen
            !
@@ -8272,6 +8338,7 @@ module perturbation
          enddo
          !
       enddo
+    !endif
       !
       !call TimerStop('Symmetrized Hamiltonian - one column')
       !
@@ -14292,6 +14359,9 @@ module perturbation
     integer            :: startdim, enddim, blocksize_, ierr, b, req_count, offset
     type(MPI_Request),allocatable :: reqs(:)
     type(MPI_Status) :: reqstat
+    type(MPI_File) :: chkptMPIIO
+    integer(kind=MPI_Offset_kind) :: mpioffset
+    integer :: mpisz
     !
     logical            :: treat_rotation =.false.  ! switch off/on the rotation 
     logical            :: treat_vibration =.true.  ! switch off/on the vibration
@@ -14402,7 +14472,7 @@ module perturbation
       !endif
       !blocksize = (enddim - startdim + 1) * blocksize
       blocksize = blocksize_
-      if (proc_rank.eq.0) blocksize = rootsize
+      !if (proc_rank.eq.0) blocksize = rootsize
 
       !
       ! The vibrational (J=0) matrix elements of the rotational and coriolis 
@@ -14430,18 +14500,35 @@ module perturbation
           ! Prepare the checkpoint file
           !
           job_is ='Vib. matrix elements of the rot. kinetic part'
-          if (proc_rank.eq.0) then !AT
-            call TimerStart('vibmat') !AT
-            call IOStart(trim(job_is),chkptIO)
+         !POSIXIO!if (proc_rank.eq.0) then !AT
+         !POSIXIO!  call TimerStart('vibmat') !AT
+         !POSIXIO!  call IOStart(trim(job_is),chkptIO)
 
-            open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%kinetmat_file)
-            write(chkptIO) 'Start Kinetic part'
+         !POSIXIO!  open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%kinetmat_file)
+         !POSIXIO!  write(chkptIO) 'Start Kinetic part'
+         !POSIXIO!  !
+         !POSIXIO!  ! store the bookkeeping information about the contr. basis set
+         !POSIXIO!  !
+         !POSIXIO!  call PTstore_icontr_cnu(PT%Maxcontracts,chkptIO,job%IOkinet_action)
+
+         !POSIXIO!  call TimerStop('vibmat') !AT
+         !POSIXIO!endif
+          call MPI_File_open(mpi_comm_world, 'mpiiofile', mpi_mode_wronly+mpi_mode_create, mpi_info_null, chkptMPIIO, ierr)
+          call MPI_File_set_errhandler(chkptMPIIO, MPI_ERRORS_ARE_FATAL)
+          mpioffset=0
+          call MPI_File_set_size(chkptMPIIO, mpioffset, ierr)
+          if (proc_rank.eq.0) then !AT
+            call TimerStart('mpiiosingle') !AT
+
+            call MPI_File_write(chkptMPIIO,'Start Kinetic part',18,mpi_character,mpi_status_ignore,ierr)
             !
             ! store the bookkeeping information about the contr. basis set
             !
-            call PTstore_icontr_cnu(PT%Maxcontracts,chkptIO,job%IOkinet_action)
-            call TimerStop('vibmat') !AT
+            call PTstoreMPI_icontr_cnu(PT%Maxcontracts,chkptMPIIO,job%IOkinet_action)
+
+            call TimerStop('mpiiosingle') !AT
           endif
+          !call MPI_File_close(chkptMPIIO, ierr)
           !
         endif 
         !
@@ -14555,13 +14642,13 @@ module perturbation
           !
           if (job%verbose>=4) write(out,"('  allocating hvib, ',i,' elements...')") rootsize
           !
-          if (proc_rank.eq.0) then
-            allocate(hvib%me(mdimen_b,mdimen_b),stat=alloc)
-            call ArrayStart('gvib-grot-gcor-fields',alloc,1,kind(f_t),rootsize)
-          else
+          !!!if (proc_rank.eq.0) then
+          !!!  allocate(hvib%me(mdimen_b,mdimen_b),stat=alloc)
+          !!!  call ArrayStart('gvib-grot-gcor-fields',alloc,1,kind(f_t),rootsize)
+          !!!else
             allocate(hvib%me(mdimen_b,startdim:startdim+mdimen_p-1),stat=alloc)
             call ArrayStart('gvib-grot-gcor-fields',alloc,1,kind(f_t),rootsize)
-          endif
+          !!endif
           hvib%me = 0
           !
           if (job%verbose>=5) call MemoryReport
@@ -14610,11 +14697,11 @@ module perturbation
           !
           !
           allocate(recvbuf(mdimen_p,mdimen_p,comm_size),stat=alloc)
-          if (proc_rank.eq.0) then
-            allocate(grot_t(mdimen_b,mdimen_b),hrot_t(mdimen_b,mdimen_b),gcor_t(mdimen_b,mdimen_b),stat=alloc)
-          else
+          !!!if (proc_rank.eq.0) then
+          !!!  allocate(grot_t(mdimen_b,mdimen_b),hrot_t(mdimen_b,mdimen_b),gcor_t(mdimen_b,mdimen_b),stat=alloc)
+          !!!else
             allocate(grot_t(mdimen_b,startdim:startdim+mdimen_p-1),hrot_t(mdimen_b,startdim:startdim+mdimen_p-1),gcor_t(mdimen_b,startdim:startdim+mdimen_p-1),stat=alloc)
-          endif
+          !!!endif
           call ArrayStart('grot-gcor-fields',alloc,1,kind(f_t),blocksize)
           call ArrayStart('grot-gcor-fields',alloc,1,kind(f_t),blocksize)
           call ArrayStart('grot-gcor-fields',alloc,1,kind(f_t),blocksize)
@@ -14623,7 +14710,8 @@ module perturbation
           !
           if (trim(job%IOkinet_action)=='SAVE'.and..not.job%IOmatelem_split) then
             !
-            if(proc_rank.eq.0) write(chkptIO) 'g_rot'
+            !POSIXIO!if(proc_rank.eq.0) write(chkptIO) 'g_rot'
+            if(proc_rank.eq.0) call MPI_File_write(chkptMPIIO,'g_rot',5,mpi_character,mpi_status_ignore,ierr)
             !
           endif 
           !
@@ -14635,6 +14723,7 @@ module perturbation
           islice = 0
           job_is = 'grot'
           !
+          call co_create_type(mdimen)
           do k1 = 1,3
             do k2 = 1,3
               !
@@ -14651,8 +14740,8 @@ module perturbation
               !
               fl => me%grot(k1,k2)
               !
+              call TimerStart('work_loop')
               do iterm = 1,grot_N
-                !if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                 !
                 call calc_contract_matrix_elements_II(iterm,k1,k2,fl,hrot_t,grot_contr_matelem_single_term)
                 !
@@ -14669,93 +14758,33 @@ module perturbation
                 enddo
                 !
               enddo
-              !req_count = 0;
+              call TimerStop('work_loop')
 
               call co_distr_data(grot_t, recvbuf, mdimen_p, startdim, enddim)
 
-              !!!!!!!call timerstart('<debug>crossmsg')
-              !!!!!!!do b=1,comm_size
-              !!!!!!!  if (send_or_recv(b).eq.1) then
-              !!!!!!!    !call mpi_isend(gcor_t((b-1)*(int(1+real(mdimen/comm_size)))+1:b*(int(1+real(mdimen/comm_size))),:),(int(1+real(mdimen/comm_size)))*(int(1+real(mdimen/comm_size))),mpi_double_precision,b-1,0,mpi_comm_world,reqs(b),ierr)
-              !!!!!!!    !call mpi_isend(gcor_t((b-1)*mdimen_p:b*mdimen_p,:),mdimen_p*mdimen_p,mpi_double_precision,b-1,0,mpi_comm_world,reqs(b),ierr)
-              !!!!!!!    call mpi_isend(grot_t(((b-1)*mdimen_p)+1:b*mdimen_p,:),mdimen_p*mdimen_p,mpi_double_precision,b-1,0,mpi_comm_world,reqs(b),ierr)
-              !!!!!!!    !write(*,*) "ISEND:", proc_rank, b-1, 0, mdimen_p*mdimen_p
-              !!!!!!!  elseif (send_or_recv(b).eq.-1) then
-              !!!!!!!    !call mpi_irecv(gcor_t((b-1)*mdimen_p:b*mdimen_p,:),mdimen_p*mdimen_p,mpi_double_precision,b-1,mpi_any_tag,mpi_comm_world,reqs(b),ierr)
-              !!!!!!!    call mpi_irecv(recvbuf(:,:,b),mdimen_p*mdimen_p,mpi_double_precision,b-1,mpi_any_tag,mpi_comm_world,reqs(b),ierr)
-              !!!!!!!    !write(*,*) "IRECV:", proc_rank, b-1, 0, mdimen_p*mdimen_p
-              !!!!!!!  else
-              !!!!!!!    reqs(b) = MPI_REQUEST_NULL
-              !!!!!!!  endif
-              !!!!!!!enddo
-
-              !!!!!!!call mpi_waitall(comm_size,reqs,mpi_statuses_ignore,ierr)
-              !!!!!!!call timerstop('<debug>crossmsg')
-
-
-              !!!!!!!call timerstart('<debug>flip')
-              !!!!!!!do b=1,comm_size
-              !!!!!!!  if (send_or_recv(b).eq.-1) then
-              !!!!!!!  if (proc_rank .eq. 4 .and. b .eq. 1) then
-              !!!!!!!    write(*,*) "inbufA:", recvbuf(mdimen_p,1,b), recvbuf(1,mdimen_p,b)
-              !!!!!!!  endif
-              !!!!!!!    offset = (b-1)*mdimen_p
-              !!!!!!!    !$omp parallel do private(icoeff,jcoeff) shared(b,grot_t) schedule(static)
-              !!!!!!!    do icoeff=startdim,enddim
-              !!!!!!!      do jcoeff=offset+1,offset+mdimen_p
-              !!!!!!!        grot_t(jcoeff,icoeff) = recvbuf(icoeff-startdim+1,jcoeff-offset,b)
-              !!!!!!!      enddo
-              !!!!!!!    enddo
-              !!!!!!!    !$omp end parallel do
-              !!!!!!!  if (proc_rank .eq. 4 .and. b .eq. 1) then
-              !!!!!!!    write(*,*) "inbuf:B", grot_t(offset+mdimen_p,startdim), grot_t(offset+1,enddim)
-              !!!!!!!  endif
-              !!!!!!!  endif
-              !!!!!!!enddo
-              !!!!!!!call timerstop('<debug>flip')
-              !do b=1,comm_size
-              !  write(*,*) "RANK", proc_rank, "REQ", reqs(b)
-              !  call mpi_wait(reqs(b),reqstat,ierr)
-              !enddo
-              !call mpi_barrier(mpi_comm_world)
-              !
               ! Gather to root #TODO kill this & do parallel IO
-              call co_gather(grot_t)
+              !POSIXIO!call co_gather(grot_t)
               !write(*,*) "GATHER PASSED @", proc_rank
               !
-              !if (proc_rank.eq.4)  write(*,*) "AT 5:", 0.0, grot_t(1,6533)
-              if (proc_rank.eq.0) then
-                !do icoeff=mdimen+1,mdimen_b
-                !  grot_t(icoeff,:) = 0
-                !  grot_t(:,icoeff) = 0
-                !end do
-                !write(*,*) "TEST:", grot_t(1000,2048), grot_t(2048,1000)
-                !write(*,*) "TEST:", grot_t(6533,1), grot_t(1,6533)
-                !write(*,*) "TEST:", grot_t(6534,1), grot_t(1,6534)
-                !!$omp parallel do private(icoeff,jcoeff) shared(grot_t) schedule(dynamic)
-                !do icoeff=1,mdimen
-                !  do jcoeff=1,icoeff-1
-                !    grot_t(icoeff,jcoeff) = grot_t(jcoeff,icoeff)
-                !  enddo
-                !enddo
-                !!$omp end parallel do
+             !POSIXIO!if (proc_rank.eq.0) then
 
-                call TimerStart('write_grotT')
-                if (trim(job%IOkinet_action)=='SAVE') then
-                  if (job%IOmatelem_split) then 
-                    !
-                    call write_divided_slice(islice,'g_rot',job%matelem_suffix,mdimen,grot_t)
-                    !
-                  else
-                    !
-                    ! store the matrix elements 
-                    !
-                    write(chkptIO) grot_t(1:mdimen,1:mdimen)
-                    !
-                  endif
-                endif
-                call TimerStop('write_grotT')
-              endif
+             !POSIXIO!  call TimerStart('write_grotT')
+             !POSIXIO!  if (trim(job%IOkinet_action)=='SAVE') then
+             !POSIXIO!    if (job%IOmatelem_split) then 
+             !POSIXIO!      !
+             !POSIXIO!      call write_divided_slice(islice,'g_rot',job%matelem_suffix,mdimen,grot_t)
+             !POSIXIO!      !
+             !POSIXIO!    else
+             !POSIXIO!      !
+             !POSIXIO!      ! store the matrix elements 
+             !POSIXIO!      !
+             !POSIXIO!      write(chkptIO) grot_t(1:mdimen,1:mdimen)
+             !POSIXIO!      !
+             !POSIXIO!    endif
+             !POSIXIO!  endif
+             !POSIXIO!  call TimerStop('write_grotT')
+             !POSIXIO!endif
+              call co_write_matrix_distr(grot_t,mdimen, startdim, enddim,chkptMPIIO)
               ! 
             enddo
           enddo
@@ -14764,18 +14793,13 @@ module perturbation
           !
           if (trim(job%IOkinet_action)=='SAVE'.and..not.job%IOmatelem_split) then
             !
-            if(proc_rank.eq.0) write(chkptIO) 'g_cor'
+            !POSIXIO!if(proc_rank.eq.0) write(chkptIO) 'g_cor'
+            if(proc_rank.eq.0) call MPI_File_write(chkptMPIIO,'g_cor',5,mpi_character,mpi_status_ignore,ierr)
             !
           endif
           !
           ! Run the loop over all term of the expansion of the Hamiltonian 
           !
-            !!!!!!!!deallocate(grot_t,hrot_t,gcor_t)
-            !!!!!!!!if (proc_rank.eq.0) then
-            !!!!!!!!  allocate(grot_t(mdimen,mdimen),hrot_t(mdimen,mdimen),gcor_t(mdimen,mdimen),stat=alloc)
-            !!!!!!!!else
-            !!!!!!!!  allocate(grot_t(mdimen,startdim:enddim),hrot_t(mdimen,startdim:enddim),gcor_t(mdimen,startdim:enddim),stat=alloc)
-            !!!!!!!!endif
           job_is = 'gcor'
           do k2 = 1,3
             !
@@ -14801,6 +14825,7 @@ module perturbation
               !
               fl => me%gcor(k1,k2)
               !
+              call TimerStart('work_loop')
               do iterm = 1,gcor_N
                 !if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                 !
@@ -14833,13 +14858,16 @@ module perturbation
                 enddo
                 !
               enddo
+              call TimerStop('work_loop')
               !TODO later?
               call co_distr_data(grot_t, recvbuf, mdimen_p, startdim, enddim)
+              call TimerStart('work_loop_2')
               do icoeff=startdim,enddim
               do jcoeff=1,icoeff-1
               grot_t(jcoeff,icoeff) = -1*grot_t(jcoeff,icoeff)
               enddo
               enddo
+              call TimerStop('work_loop_2')
               !
               ! Gather to root
               !call co_sum(grot_t, result_image=1)
@@ -14871,26 +14899,27 @@ module perturbation
               !endif
               !
             enddo
-            call co_gather(gcor_t)
-            !
-            if (proc_rank.eq.0) then !AT
-              call TimerStart('write_gcorT') !AT
-              if (trim(job%IOkinet_action)=='SAVE') then
-                !
-                if (job%IOmatelem_split) then 
-                  !
-                  call write_divided_slice(islice,'g_cor',job%matelem_suffix,mdimen,gcor_t)
-                  !
-                else
-                  !
-                  ! store the matrix elements 
-                  !
-                  write(chkptIO) gcor_t
-                  !
-                endif
-              endif
-              call TimerStop('write_gcorT') !AT
-            endif
+           !POSIXIO!call co_gather(gcor_t)
+           !POSIXIO!!
+           !POSIXIO!if (proc_rank.eq.0) then !AT
+           !POSIXIO!  call TimerStart('write_gcorT') !AT
+           !POSIXIO!  if (trim(job%IOkinet_action)=='SAVE') then
+           !POSIXIO!    !
+           !POSIXIO!    if (job%IOmatelem_split) then 
+           !POSIXIO!      !
+           !POSIXIO!      call write_divided_slice(islice,'g_cor',job%matelem_suffix,mdimen,gcor_t)
+           !POSIXIO!      !
+           !POSIXIO!    else
+           !POSIXIO!      !
+           !POSIXIO!      ! store the matrix elements 
+           !POSIXIO!      !
+           !POSIXIO!      write(chkptIO) gcor_t(1:mdimen,1:mdimen)
+           !POSIXIO!      !
+           !POSIXIO!    endif
+           !POSIXIO!  endif
+           !POSIXIO!  call TimerStop('write_gcorT') !AT
+           !POSIXIO!endif
+            call co_write_matrix_distr(gcor_t,mdimen, startdim, enddim,chkptMPIIO)
             !
           enddo
           !
@@ -14952,40 +14981,40 @@ module perturbation
             !
             if (job%verbose>=2) write(out,"('...end!')")
             !
-            call TimerStart('write_treat_rotation') !AT
-            if (treat_rotation.and.trim(job%IOkinet_action)=='SAVE') then
-               !
-               ! store the rotational matrix elements 
-               !
-               if (proc_rank.eq.0) then !AT
-                 write(chkptIO) 'g_rot'
-                 !
-                 do k1 = 1,3
-                   do k2 = 1,3
-                     !
-                     write(chkptIO) grot_(k1,k2,:,:)
-                     ! 
-                   enddo
-                 enddo
-                 !
-                 write(chkptIO) 'g_cor'
-                 !
-                 ! store the Coriolis matrix elements 
-                 !
-                 do k1 = 1,PT%Nmodes
-                   do k2 = 1,3
-                     !
-                     write(chkptIO) gcor_(k1,k2,:,:)
-                     ! 
-                   enddo
-                 enddo
-               endif
-               !
-               deallocate(grot_,gcor_)
-               call ArrayStop('grot-gcor-fields')
-               !
-            endif
-            call TimerStop('write_treat_rotation') !AT
+           !POSIXIO!call TimerStart('write_treat_rotation') !AT
+           !POSIXIO!if (treat_rotation.and.trim(job%IOkinet_action)=='SAVE') then
+           !POSIXIO!   !
+           !POSIXIO!   ! store the rotational matrix elements 
+           !POSIXIO!   !
+           !POSIXIO!   if (proc_rank.eq.0) then !AT
+           !POSIXIO!     write(chkptIO) 'g_rot'
+           !POSIXIO!     !
+           !POSIXIO!     do k1 = 1,3
+           !POSIXIO!       do k2 = 1,3
+           !POSIXIO!         !
+           !POSIXIO!         write(chkptIO) grot_(k1,k2,:,:)
+           !POSIXIO!         ! 
+           !POSIXIO!       enddo
+           !POSIXIO!     enddo
+           !POSIXIO!     !
+           !POSIXIO!     write(chkptIO) 'g_cor'
+           !POSIXIO!     !
+           !POSIXIO!     ! store the Coriolis matrix elements 
+           !POSIXIO!     !
+           !POSIXIO!     do k1 = 1,PT%Nmodes
+           !POSIXIO!       do k2 = 1,3
+           !POSIXIO!         !
+           !POSIXIO!         write(chkptIO) gcor_(k1,k2,:,:)
+           !POSIXIO!         ! 
+           !POSIXIO!       enddo
+           !POSIXIO!     enddo
+           !POSIXIO!   endif
+           !POSIXIO!   !
+           !POSIXIO!   deallocate(grot_,gcor_)
+           !POSIXIO!   call ArrayStop('grot-gcor-fields')
+           !POSIXIO!   !
+           !POSIXIO!endif
+            !POSIXIO!call TimerStop('write_treat_rotation') !AT
             !
           else ! if (.not.job%IOmatelem_split.or.job%iswap(1)==0 ) then
             !
@@ -14994,11 +15023,11 @@ module perturbation
             if (job%verbose>=2) write(out,"(/'Vibrational kinetic part...')")
             if (job%verbose>=3) write(out,"(/'Number of gvib terms  = ',i)") gvib_N
             !
-            if (proc_rank.eq.0) then
-              allocate(hvib_t(mdimen_b,mdimen_b),gvib_t(mdimen_b,mdimen_b),fvib_t(mdimen_b,mdimen_b),stat=alloc)
-            else
+            !!!if (proc_rank.eq.0) then
+            !!!  allocate(hvib_t(mdimen_b,mdimen_b),gvib_t(mdimen_b,mdimen_b),fvib_t(mdimen_b,mdimen_b),stat=alloc)
+            !!!else
               allocate(hvib_t(mdimen_b,startdim:startdim+mdimen_p-1),gvib_t(mdimen_b,startdim:startdim+mdimen_p-1),fvib_t(mdimen_b,startdim:startdim+mdimen_p-1),stat=alloc)
-            endif
+            !!!endif
             call ArrayStart('hvib-fields',alloc,1,kind(f_t),blocksize)
             call ArrayStart('hvib-fields',alloc,1,kind(f_t),blocksize)
             call ArrayStart('hvib-fields',alloc,1,kind(f_t),blocksize)
@@ -15029,7 +15058,8 @@ module perturbation
                 !
                 fl => me%gvib(k1,k2)
                 !
-                call TimerStart('<dbg>iterm_over_gvibN')
+                !call TimerStart('<dbg>iterm_over_gvibN')
+                call TimerStart('work_loop')
                 do iterm = 1,gvib_N
                   !if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                   !
@@ -15057,7 +15087,8 @@ module perturbation
                   enddo
                   !
                 enddo
-                call TimerStop('<dbg>iterm_over_gvibN')
+              call TimerStop('work_loop')
+                !call TimerStop('<dbg>iterm_over_gvibN')
                 !
                 if (job%IOmatelem_divide) then
                   !
@@ -15082,6 +15113,7 @@ module perturbation
                   !!!!!  enddo
                   !!!!!enddo
                   !!!!!!$omp end parallel do
+              call TimerStart('work_loop')
                   do b=1,comm_size
                     if (send_or_recv(b).ge.0) then
                       !$omp parallel do private(icoeff,jcoeff) shared(b,grot_t) schedule(static)
@@ -15093,6 +15125,7 @@ module perturbation
                       !$omp end parallel do
                     endif
                   enddo
+              call TimerStop('work_loop')
                   !
                 endif 
                 !
@@ -15117,7 +15150,8 @@ module perturbation
               !
               fl => me%poten
               !
-              call TimerStart('<dbg>iterm_over_potenN')
+              !call TimerStart('<dbg>iterm_over_potenN')
+              call TimerStart('work_loop')
               do iterm = 1,poten_N
                   !if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
                   !
@@ -15145,7 +15179,8 @@ module perturbation
                   enddo
                   !
               enddo
-              call TimerStop('<dbg>iterm_over_potenN')
+              call TimerStop('work_loop')
+              !call TimerStop('<dbg>iterm_over_potenN')
 
               ! gather matrix data to root node
               !call co_gather(gvib_t)
@@ -15193,7 +15228,7 @@ module perturbation
                    !
                    call divided_slice_open(islice,chkptIO_,'g_vib',job%matelem_suffix)
                    !
-                   read(chkptIO_) gvib_t
+                   read(chkptIO_) gvib_t(1:mdimen,1:mdimen)
                    !
                    !$omp parallel do private(icoeff,jcoeff) shared(hvib_t) schedule(dynamic)
                    do icoeff=1,mdimen
@@ -15230,6 +15265,7 @@ module perturbation
               !!!!  enddo
               !!!!enddo
               !!!!!$omp end parallel do
+              call TimerStart('work_loop')
               do b=1,comm_size
                 if (send_or_recv(b).ge.0) then
                   !$omp parallel do private(icoeff,jcoeff) shared(b,grot_t) schedule(static)
@@ -15241,11 +15277,12 @@ module perturbation
                   !$omp end parallel do
                 endif
               enddo
+              call TimerStop('work_loop')
               !
             endif
             call co_distr_data(hvib%me, recvbuf, mdimen_p, startdim, enddim)
             !
-            call co_gather(hvib%me)
+            !POSIXIO!call co_gather(hvib%me)
             !
             deallocate(hvib_t,gvib_t,fvib_t)
             call ArrayStop('hvib-fields')
@@ -15256,18 +15293,21 @@ module perturbation
           !
           ! store the matrix elements 
           !
-          call TimerStart('store_matelem') !AT
-          if (proc_rank.eq.0) then !AT
-            if ((trim(job%IOkinet_action)=='SAVE'.or.trim(job%IOkinet_action)=='VIB_SAVE').and. & 
-                    (.not.job%IOmatelem_divide.or.job%iswap(1)==0) .and. &
-                    (.not.job%IOmatelem_split.or.job%iswap(1)==0)) then
-               !
-               write(chkptIO) 'hvib'
-               write(chkptIO) hvib%me
-               !
-            endif
-          endif
-          call TimerStop('store_matelem') !AT
+         !POSIXIO!call TimerStart('store_matelem') !AT
+         !POSIXIO!if (proc_rank.eq.0) then !AT
+         !POSIXIO!  if ((trim(job%IOkinet_action)=='SAVE'.or.trim(job%IOkinet_action)=='VIB_SAVE').and. & 
+         !POSIXIO!          (.not.job%IOmatelem_divide.or.job%iswap(1)==0) .and. &
+         !POSIXIO!          (.not.job%IOmatelem_split.or.job%iswap(1)==0)) then
+         !POSIXIO!     !
+         !POSIXIO!     write(chkptIO) 'hvib'
+         !POSIXIO!     write(chkptIO) hvib%me(1:mdimen,1:mdimen)
+         !POSIXIO!     !
+         !POSIXIO!  endif
+         !POSIXIO!endif
+         !POSIXIO!call TimerStop('store_matelem') !AT
+          !mpiio
+          if(proc_rank.eq.0) call MPI_File_write(chkptMPIIO,'hvib',4,mpi_character,mpi_status_ignore,ierr)
+          call co_write_matrix_distr(hvib%me,mdimen, startdim, enddim,chkptMPIIO)
           !
         endif
         !
@@ -15277,10 +15317,13 @@ module perturbation
            (.not.job%IOmatelem_divide.or.job%iswap(1)==0 ).and. &
            (.not.job%IOmatelem_split.or.job%iswap(1)==0 ) ) then
           !
-          if (proc_rank.eq.0) then !AT
-            write(chkptIO) 'End Kinetic part'
-            close(chkptIO,status='keep')
-          endif
+          !POSIXIO!if (proc_rank.eq.0) then !AT
+          !POSIXIO!  write(chkptIO) 'End Kinetic part'
+          !POSIXIO!  close(chkptIO,status='keep')
+          !POSIXIO!endif
+          if(proc_rank.eq.0) call MPI_File_write(chkptMPIIO,'End Kinetic Part',16,mpi_character,mpi_status_ignore,ierr)
+          !call mpi_barrier(mpi_comm_world, ierr)
+          call MPI_File_close(chkptMPIIO, ierr)
           !
         endif 
         !
@@ -15306,105 +15349,123 @@ module perturbation
             ! Prepare the checkpoint file
             !
             job_is ='external field contracted matrix elements for J=0'
+            !if (proc_rank.eq.0) then !AT
+            !  call TimerStart('store_matelem_ext') !AT
+            !  call IOStart(trim(job_is),chkptIO)
+            !  !
+            !  open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%extFmat_file)
+            !  write(chkptIO) 'Start external field'
+            !  !
+            !  ! store the matrix elements 
+            !  !
+            !  write(chkptIO) PT%Maxcontracts
+            !  call TimerStop('store_matelem_ext') !AT
+            !endif
+            call MPI_File_open(mpi_comm_world, 'mpiioEXTfile', mpi_mode_wronly+mpi_mode_create, mpi_info_null, chkptMPIIO, ierr)
+            mpioffset=0
+            call MPI_File_set_size(chkptMPIIO, mpioffset, ierr)
             if (proc_rank.eq.0) then !AT
-              call TimerStart('store_matelem_ext') !AT
-              call IOStart(trim(job_is),chkptIO)
+              call TimerStart('mpiiosingle') !AT
+
+              call MPI_File_write(chkptMPIIO,'Start external field',20,mpi_character,mpi_status_ignore,ierr)
               !
-              open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%extFmat_file)
-              write(chkptIO) 'Start external field'
+              ! store the bookkeeping information about the contr. basis set
               !
-              ! store the matrix elements 
-              !
-              write(chkptIO) PT%Maxcontracts
-              call TimerStop('store_matelem_ext') !AT
-            endif
-            !
-          endif 
-          !
-          if (trove%FBR) then 
-            !
-            if (proc_rank.eq.0) then
-              allocate(extF_t(mdimen_b,mdimen_b),extF_r(mdimen_b,mdimen_b),stat=alloc)
-            else
-              allocate(extF_t(mdimen_b,startdim:startdim+mdimen_p-1),extF_r(mdimen_b,startdim:startdim+mdimen_p-1),stat=alloc)
-            endif
-            call ArrayStart('extF-fields',alloc,1,kind(f_t),blocksize)
-            call ArrayStart('extF-fields',alloc,1,kind(f_t),blocksize)
-            !
-            job_is = 'externalF'
-            !
-            do imu = fitting%iparam(1),fitting%iparam(2)
-              !
-              if (job%verbose>=4) write(out,"('imu = ',i8)",advance='NO') imu
-              !
-              extF_t = 0 
-              extF_r = 0 
-              !
-              extF_N_ = FLread_fields_dimension_field(job_is,imu,0)
-              !
-              fl => me%extF(imu)
-              !
-              call TimerStart('<dbg>iterm_over_extFN')
-              do iterm = 1,extF_N_
-                !if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
+                call PTstoreMPI_icontr_cnu(PT%Maxcontracts,chkptMPIIO,job%IOkinet_action)
+
+                call TimerStop('mpiiosingle') !AT
                 !
-                call calc_contract_matrix_elements_II(iterm,imu,1,fl,extF_r,extF_contr_matelem_single_term)
-                !
-                !!!!!$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
-                !!!!do icoeff=startdim,enddim
-                !!!!  do jcoeff=1,mdimen
-                !!!!    extF_t(jcoeff,icoeff) = extF_t(jcoeff,icoeff) + extF_r(jcoeff,icoeff)
-                !!!!  enddo
-                !!!!enddo
-                !!!!!$omp end parallel do
-                do b=1,comm_size
-                  if (send_or_recv(b).ge.0) then
-                    !$omp parallel do private(icoeff,jcoeff) shared(b,grot_t) schedule(static)
-                    do icoeff=startdim,enddim
-                      do jcoeff=((b-1)*mdimen_p)+1,b*mdimen_p
-                        extF_t(jcoeff,icoeff) = extF_t(jcoeff,icoeff) + extF_r(jcoeff,icoeff)
-                      enddo
-                    enddo
-                    !$omp end parallel do
-                  endif
-                enddo
-                !
-              enddo
-              call TimerStop('<dbg>iterm_over_extFN')
-              !
-              ! Gather matrix to root
-              call co_distr_data(extF_t, recvbuf, mdimen_p, startdim, enddim)
-              call co_gather(extF_t)
-              !
-              !if (proc_rank.eq.0) then
-              !  call TimerStart('iterm_over_extFN_res')
-              !  !$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
-              !  do icoeff=1,mdimen
-              !    do jcoeff=1,icoeff-1
-              !      extF_t(icoeff,jcoeff) = extF_t(jcoeff,icoeff)
-              !    enddo
-              !  enddo
-              !  !$omp end parallel do
-              !  call TimerStop('iterm_over_extFN_res')
-              !endif
-              !
-              call TimerStart('store_matelem_ext_2') !AT
-              if (proc_rank.eq.0) then !AT
-                if (job%IOextF_divide) then 
-                  !
-                  call write_divided_slice(imu,'extF',job%extmat_suffix,mdimen,extF_t)
-                  !
-                else
-                  !
-                  ! always store the matrix elements of the extF moment 
-                  !
-                  write(chkptIO) imu
-                  !
-                  write(chkptIO) extF_t
-                  !
-                endif
               endif
-              call TimerStop('store_matelem_ext_2') !AT
+            endif 
+            !
+            if (trove%FBR) then 
+              !
+              !!if (proc_rank.eq.0) then
+              !!  allocate(extF_t(mdimen_b,mdimen_b),extF_r(mdimen_b,mdimen_b),stat=alloc)
+              !!else
+                allocate(extF_t(mdimen_b,startdim:startdim+mdimen_p-1),extF_r(mdimen_b,startdim:startdim+mdimen_p-1),stat=alloc)
+              !!endif
+              call ArrayStart('extF-fields',alloc,1,kind(f_t),blocksize)
+              call ArrayStart('extF-fields',alloc,1,kind(f_t),blocksize)
+              !
+              job_is = 'externalF'
+              !
+              do imu = fitting%iparam(1),fitting%iparam(2)
+                !
+                if (job%verbose>=4) write(out,"('imu = ',i8)",advance='NO') imu
+                !
+                extF_t = 0 
+                extF_r = 0 
+                !
+                extF_N_ = FLread_fields_dimension_field(job_is,imu,0)
+                !
+                fl => me%extF(imu)
+                !
+                !call TimerStart('<dbg>iterm_over_extFN')
+                call TimerStart('work_loop')
+                do iterm = 1,extF_N_
+                  !if (mod(iterm,num_images()) .ne. (this_image() - 1)) cycle
+                  !
+                  call calc_contract_matrix_elements_II(iterm,imu,1,fl,extF_r,extF_contr_matelem_single_term)
+                  !
+                  !!!!!$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
+                  !!!!do icoeff=startdim,enddim
+                  !!!!  do jcoeff=1,mdimen
+                  !!!!    extF_t(jcoeff,icoeff) = extF_t(jcoeff,icoeff) + extF_r(jcoeff,icoeff)
+                  !!!!  enddo
+                  !!!!enddo
+                  !!!!!$omp end parallel do
+                  do b=1,comm_size
+                    if (send_or_recv(b).ge.0) then
+                      !$omp parallel do private(icoeff,jcoeff) shared(b,grot_t) schedule(static)
+                      do icoeff=startdim,enddim
+                        do jcoeff=((b-1)*mdimen_p)+1,b*mdimen_p
+                          extF_t(jcoeff,icoeff) = extF_t(jcoeff,icoeff) + extF_r(jcoeff,icoeff)
+                        enddo
+                      enddo
+                      !$omp end parallel do
+                    endif
+                  enddo
+                  !
+                enddo
+                call TimerStop('work_loop')
+                !call TimerStop('<dbg>iterm_over_extFN')
+                !
+                ! Gather matrix to root
+                call co_distr_data(extF_t, recvbuf, mdimen_p, startdim, enddim)
+                !!POSIXIO!!call co_gather(extF_t)
+              !!POSIXIO!!!
+              !!POSIXIO!!!if (proc_rank.eq.0) then
+              !!POSIXIO!!!  call TimerStart('iterm_over_extFN_res')
+              !!POSIXIO!!!  !$omp parallel do private(icoeff,jcoeff) shared(extF_t) schedule(dynamic)
+              !!POSIXIO!!!  do icoeff=1,mdimen
+              !!POSIXIO!!!    do jcoeff=1,icoeff-1
+              !!POSIXIO!!!      extF_t(icoeff,jcoeff) = extF_t(jcoeff,icoeff)
+              !!POSIXIO!!!    enddo
+              !!POSIXIO!!!  enddo
+              !!POSIXIO!!!  !$omp end parallel do
+              !!POSIXIO!!!  call TimerStop('iterm_over_extFN_res')
+              !!POSIXIO!!!endif
+              !!POSIXIO!!!
+              !!POSIXIO!!call TimerStart('store_matelem_ext_2') !AT
+              !!POSIXIO!!if (proc_rank.eq.0) then !AT
+              !!POSIXIO!!  if (job%IOextF_divide) then 
+              !!POSIXIO!!    !
+              !!POSIXIO!!    call write_divided_slice(imu,'extF',job%extmat_suffix,mdimen,extF_t)
+              !!POSIXIO!!    !
+              !!POSIXIO!!  else
+              !!POSIXIO!!    !
+              !!POSIXIO!!    ! always store the matrix elements of the extF moment 
+              !!POSIXIO!!    !
+              !!POSIXIO!!    write(chkptIO) imu
+              !!POSIXIO!!    !
+              !!POSIXIO!!    write(chkptIO) extF_t(1:mdimen,1:mdimen)
+              !!POSIXIO!!    !
+              !!POSIXIO!!  endif
+              !!POSIXIO!!endif
+              !!POSIXIO!!call TimerStop('store_matelem_ext_2') !AT
+              if(proc_rank.eq.0) call MPI_File_write(chkptMPIIO,imu,1,mpi_integer,mpi_status_ignore,ierr)
+              call co_write_matrix_distr(extF_t,mdimen, startdim, enddim,chkptMPIIO)
               !
               if (job%verbose>=4) write(out,"('...done')",advance='YES') 
               !
@@ -15450,8 +15511,11 @@ module perturbation
           endif 
           !
           if (proc_rank.eq.0) then !AT
-            if (.not.job%IOextF_divide) write(chkptIO) 'End external field'
+            !if (.not.job%IOextF_divide) write(chkptIO) 'End external field'
+            if(.not.job%IOextF_divide) call MPI_File_write(chkptMPIIO,'End Kinetic Part',16,mpi_character,mpi_status_ignore,ierr)
           endif
+          !call mpi_barrier(mpi_comm_world, ierr)
+          call MPI_File_close(chkptMPIIO, ierr)
           !
         endif
         !
@@ -32803,6 +32867,67 @@ end subroutine read_contr_matelem_expansion_classN
       !
     end subroutine PTstore_icontr_cnu
 
+    subroutine PTstoreMPI_icontr_cnu(Maxcontracts,iunit,dir)
+      use coarray_aux
+
+      integer(ik),intent(in) :: Maxcontracts
+      type(mpi_file),intent(in) :: iunit
+      character(len=18),intent(in)  :: dir
+      integer(ik)   :: alloc
+      character(len=18)  :: buf18
+      integer(ik)        :: ncontr
+      integer(ik),allocatable :: imat_t(:,:)
+      integer::ierr
+      !
+      selectcase (trim(dir))
+        !
+      case ('SAVE')
+        !
+        call MPI_File_write(iunit, Maxcontracts, 1,mpi_integer,mpi_status_ignore,ierr)
+        !
+        call MPI_File_write(iunit, 'icontr_cnu', 10,mpi_character,mpi_status_ignore,ierr)
+        !
+        call MPI_File_write(iunit, PT%icontr_cnu(0:PT%Nclasses,1:Maxcontracts), (1+PT%Nclasses)*Maxcontracts, mpi_integer, mpi_status_ignore, ierr)
+        !
+        call MPI_File_write(iunit, 'icontr_ideg', 11,mpi_character,mpi_status_ignore,ierr)
+        !
+        call MPI_File_write(iunit, PT%icontr_ideg(0:PT%Nclasses,1:Maxcontracts), (1+PT%Nclasses)*Maxcontracts, mpi_integer, mpi_status_ignore, ierr)
+
+        !
+      !case ('APPEND')
+      !  !
+      !  read(iunit) ncontr
+      !  !
+      !  if (Maxcontracts/=ncontr) then
+      !    write (out,"(' Vib. kinetic checkpoint file ',a)") job%kinetmat_file
+      !    write (out,"(' Actual and stored basis sizes at J=0 do not agree  ',2i8)") PT%Maxcontracts,ncontr
+      !    stop 'PTrestore_rot_kinetic_matrix_elements - in file - illegal nroots '
+      !  end if
+      !  !
+      !  allocate (imat_t(0:PT%Nclasses,ncontr),stat=alloc)
+      !  call ArrayStart('mat_t',alloc,size(imat_t),kind(imat_t))
+      !  !
+      !  read(iunit) buf18(1:10)
+      !  if (buf18(1:10)/='icontr_cnu') then
+      !    write (out,"(' Vib. kinetic checkpoint file ',a,': icontr_cnu is missing ',a)") job%kinetmat_file,buf18(1:10)
+      !    stop 'PTrestore_rot_kinetic_matrix_elements - in file -  icontr_cnu missing'
+      !  end if
+      !  !
+      !  read(iunit) imat_t(0:PT%Nclasses,1:ncontr)
+      !  !
+      !  read(iunit) buf18(1:11)
+      !  if (buf18(1:11)/='icontr_ideg') then
+      !    write (out,"(' Vib. kinetic checkpoint file ',a,': icontr_ideg is missing ',a)") job%kinetmat_file,buf18(1:11)
+      !    stop 'PTrestore_rot_kinetic_matrix_elements - in file -  icontr_ideg missing'
+      !  end if
+      !  !
+      !  read(iunit) imat_t(0:PT%Nclasses,1:ncontr)
+      !  !
+      !  deallocate(imat_t)
+      !  !
+      end select
+      !
+    end subroutine PTstoreMPI_icontr_cnu
    
     subroutine PTdefine_contr_from_eigenvect(nroots,Neigenlevels,eigen)
 

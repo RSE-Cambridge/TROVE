@@ -13,8 +13,8 @@ pot_user = pot_ch4
 PLAT = _0605
 ###FOR  = ifort
 FOR = mpiifort 
-!FFLAGS = -ip  -xhost  -qopenmp -O3 -coarray=distributed
-FFLAGS = -ip  -xhost  -qopenmp -O3 #-coarray=distributed
+#FFLAGS = -ip  -xhost  -qopenmp -O3 -coarray=distributed
+FFLAGS = -g3 -ip  -xcore-avx2  -qopenmp -O3 #-coarray=distributed
 
 
 #ARPACK =  ~/libraries/ARPACK/libarpack_omp_64.a
