@@ -1683,7 +1683,7 @@ contains
               !
               if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call divided_slice_write_mpi(islice,'g_rot',job%j0matelem_suffix,Neigenroots,mat_s,mat_s_block_type)
-              elseif (action%mpiio_to_fortran) then
+              elseif (blacs_size .gt. 1 .and. action%mpiio_to_fortran) then
                 call co_gather_darray(full_mat_s, mat_s)
                 if(mpi_rank.eq.0) call divided_slice_write(islice,'g_rot',job%j0matelem_suffix,Neigenroots,full_mat_s)
               else
@@ -1698,7 +1698,7 @@ contains
               !
               if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call MPI_File_write_all(fileh_w, mat_s, size(mat_s), mpi_double_precision, mpi_status_ignore, ierr)
-              else if (action%mpiio_to_fortran) then
+              elseif (blacs_size .gt. 1 .and. action%mpiio_to_fortran) then
                 call co_gather_darray(full_mat_s, mat_s)
                 if(mpi_rank.eq.0) write(chkptIO) full_mat_s
               else
@@ -1813,7 +1813,7 @@ contains
               !
               if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call divided_slice_write_mpi(islice,'g_cor',job%j0matelem_suffix,Neigenroots,mat_s,mat_s_block_type)
-              elseif (action%mpiio_to_fortran) then
+              elseif (blacs_size .gt. 1 .and. action%mpiio_to_fortran) then
                 call co_gather_darray(full_mat_s, mat_s)
                 if(mpi_rank.eq.0) call divided_slice_write(islice,'g_cor',job%j0matelem_suffix,Neigenroots,full_mat_s)
               else
@@ -1828,7 +1828,7 @@ contains
               !
               if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call MPI_File_write_all(fileh_w, mat_s, size(mat_s), mpi_double_precision, mpi_status_ignore, ierr)
-              else if (action%mpiio_to_fortran) then
+              elseif (blacs_size .gt. 1 .and. action%mpiio_to_fortran) then
                 call co_gather_darray(full_mat_s, mat_s)
                 if (mpi_rank.eq.0) write(chkptIO) full_mat_s
               else
@@ -1971,7 +1971,7 @@ contains
           !
           if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
             !
-            call mpi_file_open(mpi_comm_world, filename, mpi_mode_wronly+mpi_mode_create, mpi_info_null, fileh_w, ierr)
+            call mpi_file_open(mpi_comm_world, job%exteigen_file, mpi_mode_wronly+mpi_mode_create, mpi_info_null, fileh_w, ierr)
             call mpi_file_set_errhandler(fileh_w, mpi_errors_are_fatal)
             !
             mpioffset = 0
@@ -2098,7 +2098,7 @@ contains
               call MPI_Barrier(mpi_comm_world, ierr)
               call MPI_File_seek(fileh_w, int(0,MPI_OFFSET_KIND), MPI_SEEK_END)
               call MPI_File_write(fileh_w, mat_s, size(mat_s), mpi_double_precision, mpi_status_ignore, ierr)
-            else if (action%mpiio_to_fortran) then
+            elseif (blacs_size .gt. 1 .and. action%mpiio_to_fortran) then
               call co_gather_darray(full_mat_s, mat_s)
               if(mpi_rank.eq.0) then
                 write(chkptIO) imu
@@ -2115,7 +2115,7 @@ contains
             !
             if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
               call divided_slice_write_mpi(imu,'extF',job%j0extmat_suffix,Neigenroots,mat_s,mat_s_block_type)
-            elseif (action%mpiio_to_fortran) then
+            elseif (blacs_size .gt. 1 .and. action%mpiio_to_fortran) then
               call co_gather_darray(full_mat_s, mat_s)
               if(mpi_rank.eq.0) call divided_slice_write(islice,'extF',job%j0extmat_suffix,Neigenroots,full_mat_s)
             else

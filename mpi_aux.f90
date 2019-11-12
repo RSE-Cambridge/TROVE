@@ -150,6 +150,11 @@ contains
     integer,dimension(2)                              :: global_size, distr, dargs
     integer                                           :: MB,NB, i, ierr
 
+    if (comm_size .eq. 1) then
+      mat = submat
+      return
+    endif
+
     nprows = 0
     npcols = 0
     myprows = 0
