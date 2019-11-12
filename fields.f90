@@ -444,6 +444,7 @@ module fields
      logical :: band_fitting  = .false.
      logical :: convert_vibme = .false.
      logical :: intensity     = .false.
+     logical :: mpiio_to_fortran = .false.
      !
    end type FLactionT
 
@@ -2635,6 +2636,14 @@ module fields
            case('FORMAT')
              !
              call readu(job%kinetmat_format)
+             !
+             select case(trim(job%kinetmat_format))
+             case ('MPIIO-RO')
+               job%kinetmat_format = "MPIIO"
+               action%mpiio_to_fortran = .true.
+             case default
+               continue
+             end select
              !
            case('FIT_POTEN','FIT_POT','FITPOTEN')
              !

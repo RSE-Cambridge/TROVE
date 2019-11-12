@@ -14,6 +14,8 @@ module mpi_aux
   public nprow,npcol,myprow,mypcol
   public mpi_real_size, mpi_int_size
 
+  public co_gather_darray
+
   interface co_sum
     module procedure :: co_sum_double
   end interface
@@ -112,6 +114,68 @@ contains
 
     call TimerStop('co_sum_double')
   end subroutine
+
+  subroutine co_gather_darray(mat, submat)
+
+    real(rk), intent(inout), dimension(:,:)       :: mat
+    real(rk), intent(in), dimension(:,:)          :: submat
+
+    type(MPI_Datatype), dimension(comm_size)      :: stypes, rtypes
+    integer, dimension(comm_size)                 :: sendcounts, recvcounts, displacements
+    integer, dimension(comm_size)                 :: nprows, npcols, myprows, mypcols
+
+    integer,dimension(2)                              :: global_size, distr, dargs
+    integer                                           :: MB,NB, i, ierr
+
+    nprows = 0
+    npcols = 0
+    myprows = 0
+    mypcols = 0
+    nprows(mpi_rank+1) = nprow
+    npcols(mpi_rank+1) = npcol
+    myprows(mpi_rank+1) = myprow
+    mypcols(mpi_rank+1) = mypcol
+
+    call mpi_allreduce(mpi_in_place, myprows, comm_size, mpi_integer, MPI_SUM, mpi_comm_world, ierr)
+    call mpi_allreduce(mpi_in_place, mypcols, comm_size, mpi_integer, MPI_SUM, mpi_comm_world, ierr)
+    call mpi_allreduce(mpi_in_place, nprows, comm_size, mpi_integer, MPI_SUM, mpi_comm_world, ierr)
+    call mpi_allreduce(mpi_in_place, npcols, comm_size, mpi_integer, MPI_SUM, mpi_comm_world, ierr)
+
+    do i=1,comm_size
+      MB = size(mat,1)/nprows(i)
+      NB = size(mat,2)/npcols(i)
+
+      global_size = (/size(mat,1), size(mat,2)/)
+      distr = (/MPI_DISTRIBUTE_CYCLIC, MPI_DISTRIBUTE_CYCLIC/)
+      dargs = (/MB, NB/)
+      call MPI_Type_create_darray(blacs_size, i-1, 2, global_size, distr, dargs, blacs_dims, &
+        MPI_ORDER_FORTRAN, MPI_DOUBLE_PRECISION, rtypes(i), ierr)
+      call MPI_Type_commit(rtypes(i), ierr)
+    end do
+
+    stypes = mpi_double_precision
+
+    displacements = 0
+    sendcounts = 0
+    sendcounts(1) = size(submat)
+
+    if (mpi_rank .eq. 0) then
+      recvcounts = 1
+    else
+      recvcounts = 0
+    endif
+
+    call MPI_Alltoallw( &
+        submat, sendcounts, displacements, stypes, &
+        mat, recvcounts, displacements, rtypes, &
+        mpi_comm_world, ierr &
+      )
+
+    do i=1,comm_size
+      call MPI_Type_free(rtypes(i), ierr)
+    end do
+
+  end subroutine co_gather_darray
 
   subroutine co_init_comms()
     integer :: ierr

@@ -10,7 +10,7 @@ module tran
  use timer,        only : IOstart,IOstop,arraystart,arraystop,arrayminus,Timerstart,Timerstop,TimerReport,MemoryReport
  use me_numer,     only : simpsonintegral_ark
  use molecules,    only : MLcoord_direct
- use fields,       only : manifold, FLfingerprint, job,FLNmodes,FLextF_coeffs,FLread_extF_rank,FLextF_matelem,fitting
+ use fields,       only : action, manifold, FLfingerprint, job,FLNmodes,FLextF_coeffs,FLread_extF_rank,FLextF_matelem,fitting
  use moltype,      only : intensity,extF
  use symmetry,     only : sym
 
@@ -1222,6 +1222,7 @@ contains
     integer(hik)       :: matsize2,matsize,rootsize,rootsize2
     real(rk),allocatable :: gmat(:,:),psi(:,:),psi_t(:,:)
     real(rk),allocatable :: mat_s(:,:),mat_t(:,:)
+    real(rk),allocatable :: full_mat_s(:,:) !AT
     integer(ik),allocatable :: ijterm(:,:)
     double precision,parameter :: alpha = 1.0d0,beta=0.0d0
     character(len=cl)  :: jchar,filename
@@ -1272,6 +1273,12 @@ contains
       else
         call co_block_type_init(mat_s, Neigenroots, Neigenroots, desc_mat_s, info, mat_s_block_type)
         call ArrayStart('mat_s',info,1,kind(mat_s),int(size(mat_s),hik))
+
+        ! AT
+        if (action%mpiio_to_fortran) then
+          allocate(full_mat_s(Neigenroots,Neigenroots),stat=info)
+          call ArrayStart('full_mat_s',info,1,kind(full_mat_s),matsize2)
+        endif
       endif
       !
       matsize = int(dimen*Neigenroots,hik)
@@ -1448,7 +1455,6 @@ contains
              !
           enddo
         else
-          write(*,*) "TODO: This info2gl loop needs to be verified for correctness@TRAN.f90"
           allocate(vec(dimen),stat = info)
           !
           do ilevel = 1,Neigenlevels
@@ -1504,8 +1510,9 @@ contains
           !
           job_is ='Eigen-vib. matrix elements of the rot. kinetic part'
           !
-          if (trim(job%kinetmat_format).eq.'MPIIO') then
-            call MPI_File_open(mpi_comm_world, job%kineteigen_file, mpi_mode_wronly+mpi_mode_create, mpi_info_null, fileh_w, ierr)
+          if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
+            filename = job%kineteigen_file
+            call MPI_File_open(mpi_comm_world, filename, mpi_mode_wronly+mpi_mode_create, mpi_info_null, fileh_w, ierr)
             call MPI_File_set_errhandler(fileh_w, MPI_ERRORS_ARE_FATAL)
             mpioffset = 0
             call MPI_File_set_size(fileh_w, mpioffset, ierr)
@@ -1516,11 +1523,9 @@ contains
               !
               treat_vibration = .false.
               !
-              !call PTstore_icontr_cnu(Neigenroots,chkptIO,job%IOj0matel_action)
               call PTstorempi_icontr_cnu(Neigenroots,fileh_w,job%IOj0matel_action)
               !
               if (job%vib_rot_contr) then
-                !write(chkptIO) 'vib-rot'
                 call MPI_File_write(fileh_w, 'vib-rot', 7, mpi_character, mpi_status_ignore, ierr)
               endif
             else
@@ -1529,12 +1534,12 @@ contains
             endif
           else
             call IOStart(trim(job_is),chkptIO)
-            !
-            open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%kineteigen_file)
-            write(chkptIO) 'Start Kinetic part'
-            !
             treat_vibration = .false.
+            !
             if(mpi_rank .eq. 0) then
+              !
+              open(chkptIO,form='unformatted',action='write',position='rewind',status='replace',file=job%kineteigen_file)
+              write(chkptIO) 'Start Kinetic part'
               !
               call PTstore_icontr_cnu(Neigenroots,chkptIO,job%IOj0matel_action)
               !
@@ -1587,13 +1592,17 @@ contains
           task = 'rot'
           !
           if (trim(job%kinetmat_format).eq.'MPIIO') then
-            if(mpi_rank.eq.0) call MPI_File_write(fileh_w, 'g_rot', 5, mpi_character, mpi_status_ignore, ierr)
-            call mpi_barrier(MPI_COMM_WORLD, ierr)
-            call MPI_File_seek(fileh_w, int(0,MPI_OFFSET_KIND), MPI_SEEK_END)
+            if (action%mpiio_to_fortran) then
+              if(mpi_rank.eq.0) write(chkptIO) 'g_rot'
+            else
+              if(mpi_rank.eq.0) call MPI_File_write(fileh_w, 'g_rot', 5, mpi_character, mpi_status_ignore, ierr)
+              call mpi_barrier(MPI_COMM_WORLD, ierr)
+              call MPI_File_seek(fileh_w, int(0,MPI_OFFSET_KIND), MPI_SEEK_END)
+            endif
             !
             call restore_rot_kinetic_matrix_elements_mpi(jrot,treat_vibration,task,fileh)
           else
-            write(chkptIO) 'g_rot'
+            if(mpi_rank.eq.0) write(chkptIO) 'g_rot'
             !
             call restore_rot_kinetic_matrix_elements(jrot,treat_vibration,task,iunit)
           endif
@@ -1669,8 +1678,11 @@ contains
             !
             if (job%IOmatelem_split.and..not.job%vib_rot_contr) then 
               !
-              if (trim(job%kinetmat_format).eq.'MPIIO') then
+              if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call divided_slice_write_mpi(islice,'g_rot',job%j0matelem_suffix,Neigenroots,mat_s,mat_s_block_type)
+              elseif (action%mpiio_to_fortran) then
+                call co_gather_darray(full_mat_s, mat_s)
+                if(mpi_rank.eq.0) call divided_slice_write(islice,'g_rot',job%j0matelem_suffix,Neigenroots,full_mat_s)
               else
                 if(mpi_rank.eq.0) call divided_slice_write(islice,'g_rot',job%j0matelem_suffix,Neigenroots,mat_s)
               endif
@@ -1681,10 +1693,13 @@ contains
               !
             else
               !
-              if (trim(job%kinetmat_format).eq.'MPIIO') then
+              if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call MPI_File_write_all(fileh_w, mat_s, size(mat_s), mpi_double_precision, mpi_status_ignore, ierr)
+              else if (action%mpiio_to_fortran) then
+                call co_gather_darray(full_mat_s, mat_s)
+                if(mpi_rank.eq.0) write(chkptIO) full_mat_s
               else
-                write (chkptIO) mat_s
+                if(mpi_rank.eq.0) write (chkptIO) mat_s
               endif
               !
             endif
@@ -1717,13 +1732,17 @@ contains
             !
             call restore_rot_kinetic_matrix_elements_mpi(jrot,treat_vibration,task,fileh)
             !
-            if(mpi_rank.eq.0) call MPI_File_write(fileh_w, 'g_cor', 5, mpi_character, mpi_status_ignore, ierr)
-            call MPI_Barrier(MPI_COMM_WORLD, ierr)
-            call MPI_File_seek(fileh_w, int(0,MPI_OFFSET_KIND), MPI_SEEK_END)
+            if (action%mpiio_to_fortran) then
+              if(mpi_rank.eq.0) write(chkptIO) 'g_cor'
+            else
+              if(mpi_rank.eq.0) call MPI_File_write(fileh_w, 'g_cor', 5, mpi_character, mpi_status_ignore, ierr)
+              call MPI_Barrier(MPI_COMM_WORLD, ierr)
+              call MPI_File_seek(fileh_w, int(0,MPI_OFFSET_KIND), MPI_SEEK_END)
+            endif
           else
             call restore_rot_kinetic_matrix_elements(jrot,treat_vibration,task,iunit)
             !
-            write(chkptIO) 'g_cor'
+            if(mpi_rank.eq.0) write(chkptIO) 'g_cor'
           endif
           !
         endif
@@ -1789,8 +1808,11 @@ contains
             !
             if (job%IOmatelem_split.and..not.job%vib_rot_contr) then 
               !
-              if (trim(job%kinetmat_format).eq.'MPIIO') then
+              if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call divided_slice_write_mpi(islice,'g_cor',job%j0matelem_suffix,Neigenroots,mat_s,mat_s_block_type)
+              elseif (action%mpiio_to_fortran) then
+                call co_gather_darray(full_mat_s, mat_s)
+                if(mpi_rank.eq.0) call divided_slice_write(islice,'g_cor',job%j0matelem_suffix,Neigenroots,full_mat_s)
               else
                 if(mpi_rank.eq.0) call divided_slice_write(islice,'g_cor',job%j0matelem_suffix,Neigenroots,mat_s)
               endif
@@ -1801,10 +1823,13 @@ contains
               !
             else
               !
-              if (trim(job%kinetmat_format).eq.'MPIIO') then
+              if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
                 call MPI_File_write_all(fileh_w, mat_s, size(mat_s), mpi_double_precision, mpi_status_ignore, ierr)
+              else if (action%mpiio_to_fortran) then
+                call co_gather_darray(full_mat_s, mat_s)
+                if (mpi_rank.eq.0) write(chkptIO) full_mat_s
               else
-                write (chkptIO) mat_s
+                if (mpi_rank.eq.0) write (chkptIO) mat_s
               endif
               !
             endif
@@ -1827,18 +1852,18 @@ contains
         if (job%verbose>=5) call TimerStop('J0-convertion for g_cor')
         !
         if ((.not.job%IOmatelem_split.or.job%iswap(1)==1).and.(mpi_rank.eq.0)) then
-          if (trim(job%kinetmat_format).eq.'MPIIO') then
+          if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
             call MPI_File_write(fileh_w, 'End Kinetic part', 16, mpi_character, mpi_status_ignore, ierr)
           else
-            write(chkptIO) 'End Kinetic part'
+            if(mpi_rank.eq.0) write(chkptIO) 'End Kinetic part'
           endif
         endif
         !
         if (.not.job%vib_rot_contr) then 
-          if (trim(job%kinetmat_format).eq.'MPIIO') then
+          if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
             call MPI_File_close(fileh_w, ierr)
           else
-            close(chkptIO,status='keep')
+            if(mpi_rank.eq.0) close(chkptIO,status='keep')
           endif
         endif
         !
@@ -1860,7 +1885,7 @@ contains
       if (trim(job%kinetmat_format).eq.'MPIIO') then
         call MPI_File_close(fileh, ierr)
       else
-        close(chkptIO,status='keep')
+        close(iunit,status='keep')
       endif
       !
       ! External field part 
@@ -1941,9 +1966,9 @@ contains
           job_is ='external field contracted matrix elements for J=0'
           call IOStart(trim(job_is),chkptIO)
           !
-          if (trim(job%kinetmat_format).eq.'MPIIO') then
+          if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
             !
-            call mpi_file_open(mpi_comm_world, job%exteigen_file, mpi_mode_wronly+mpi_mode_create, mpi_info_null, fileh_w, ierr)
+            call mpi_file_open(mpi_comm_world, filename, mpi_mode_wronly+mpi_mode_create, mpi_info_null, fileh_w, ierr)
             call mpi_file_set_errhandler(fileh_w, mpi_errors_are_fatal)
             !
             mpioffset = 0
@@ -1960,7 +1985,7 @@ contains
             call mpi_barrier(mpi_comm_world, ierr)
             call mpi_file_seek(fileh_w, int(0,mpi_offset_kind), mpi_seek_end)
             !
-          else
+          else if(mpi_rank.eq.0) then
             !
             open(chkptio,form='unformatted',action='write',position='rewind',status='replace',file=job%exteigen_file)
             write(chkptio) 'start external field'
@@ -2065,20 +2090,31 @@ contains
           !
           if (.not.job%IOextF_divide.or.job%IOextF_stitch) then
             !
-            if (trim(job%kinetmat_format).eq.'MPIIO') then
+            if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
               if(mpi_rank.eq.0) call MPI_File_write(fileh_w, imu, 1, mpi_integer, mpi_status_ignore, ierr)
               call MPI_Barrier(mpi_comm_world, ierr)
               call MPI_File_seek(fileh_w, int(0,MPI_OFFSET_KIND), MPI_SEEK_END)
               call MPI_File_write(fileh_w, mat_s, size(mat_s), mpi_double_precision, mpi_status_ignore, ierr)
+            else if (action%mpiio_to_fortran) then
+              call co_gather_darray(full_mat_s, mat_s)
+              if(mpi_rank.eq.0) then
+                write(chkptIO) imu
+                write(chkptIO) full_mat_s
+              endif
             else
-              write(chkptIO) imu
-              write(chkptIO) mat_s
+              if(mpi_rank.eq.0) then
+                write(chkptIO) imu
+                write(chkptIO) mat_s
+              endif
             endif
             !
           else
             !
-            if (trim(job%kinetmat_format).eq.'MPIIO') then
+            if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
               call divided_slice_write_mpi(imu,'extF',job%j0extmat_suffix,Neigenroots,mat_s,mat_s_block_type)
+            elseif (action%mpiio_to_fortran) then
+              call co_gather_darray(full_mat_s, mat_s)
+              if(mpi_rank.eq.0) call divided_slice_write(islice,'extF',job%j0extmat_suffix,Neigenroots,full_mat_s)
             else
               if(mpi_rank.eq.0) call divided_slice_write(imu,'extF',job%j0extmat_suffix,Neigenroots,mat_s)
             endif
@@ -2127,10 +2163,10 @@ contains
         !
         if (.not.job%IOextF_divide.or.job%IOextF_stitch) then
           !
-          if (trim(job%kinetmat_format).eq.'MPIIO') then
+          if (trim(job%kinetmat_format).eq.'MPIIO' .and. .not.action%mpiio_to_fortran) then
             if(mpi_rank.eq.0) call MPI_File_write(fileh_w, 'End external field', 18, mpi_character, mpi_status_ignore, ierr)
             call MPI_File_close(fileh_w, ierr)
-          else
+          else if (mpi_rank.eq.0) then
             write(chkptIO) 'End external field'
             close(chkptIO,status='keep')
           endif
@@ -2140,6 +2176,12 @@ contains
         if (job%verbose>=3) write(out,"(/' ...done!')")
         !
       endif 
+      !
+      ! AT
+      if (allocated(full_mat_s)) then
+        deallocate(full_mat_s)
+        call ArrayStop('full_mat_s')
+      endif
       !
       deallocate(mat_s)
       call ArrayStop('mat_s')

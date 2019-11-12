@@ -16489,8 +16489,10 @@ module perturbation
         offset = 0
         call MPI_File_open(mpi_comm_world, filename, mpi_mode_wronly+mpi_mode_create, mpi_info_null, chkptMPIIO, ierr)
         call MPI_File_set_size(chkptMPIIO, offset, ierr)
+        call mpi_barrier(mpi_comm_world, ierr)
         !
         if(mpi_rank .eq. 0) call MPI_File_write(chkptMPIIO,name,len(trim(name)),mpi_character,mpi_status_ignore,ierr)
+        call mpi_barrier(mpi_comm_world, ierr)
         !
         call co_write_matrix_distr(field, N, co_startdim, co_enddim,chkptMPIIO)
         !
